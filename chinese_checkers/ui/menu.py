@@ -1,0 +1,433 @@
+"""Start screen: pick the mode and the table, name the players, choose the rules.
+
+The seating for a given player count is not obvious from a number -- "4 人"
+could mean two opposing pairs or four adjacent camps -- so each choice is shown
+as a card containing a real miniature of the board drawn by the same
+:class:`~.render.BoardRenderer` the game uses.  That also means the previews can
+never drift from the actual seating: both read ``board.SEATING`` /
+``board.TRIPLE_SEATING``.
+
+The two modes differ only in how many corners one person owns, so the screen
+keeps a single notion of "the camps of each player" (:meth:`MenuScreen._camp_groups`)
+and builds the player rows and the colour list from it -- one row per person in
+either mode, with one swatch per colour they run.
+
+The screen produces a :class:`GameConfig` and hands it to ``on_start``; it never
+constructs a :class:`~..core.game.Game` itself, so the app stays in charge of
+the screen swap.
+"""
+
+from __future__ import annotations
+
+import tkinter as tk
+from dataclasses import dataclass
+from typing import Callable, Sequence
+
+from ..core.board import (
+    BALANCED_COUNTS,
+    COLOR_NAMES,
+    DEFAULT_COLORS,
+    SEATING,
+    TRIPLE_SEATING,
+)
+from ..core.rules import RuleSet
+from .render import BoardRenderer
+from .theme import DEFAULT, Theme, mix
+
+#: Player counts offered, in the order the cards appear.
+COUNTS: tuple[int, ...] = (2, 3, 4, 5, 6)
+
+#: ``(key, title, blurb)`` for the two modes, in card order.
+MODES: tuple[tuple[str, str, str], ...] = (
+    ("classic", "经典对战", "每人一色 · 2-6 人"),
+    ("triple", "三色对战", "两人各执三色"),
+)
+
+#: The camps of the three-colour mode flattened into seat order, so the preview
+#: and the colour list are read off the engine's seating instead of restating it.
+TRIPLE_CAMPS: tuple[int, ...] = tuple(camp for camps in TRIPLE_SEATING for camp in camps)
+
+_MINI_SIZE = 76
+
+#: The mode cards sit next to their text instead of above it, so their preview
+#: is smaller than the seating cards'.
+_MODE_MINI_SIZE = 56
+
+_UNBALANCED_NOTE = "5 人局中，某一方的目标三角无人占据，形势并不对称。"
+
+_TRIPLE_NOTE = "每人执三色，各色分别驶向自己正对面的角；两人轮流走子，一回合只动一颗子。"
+
+_CLASSIC_SUBTITLE = "把自己全部十颗棋子送进对面的三角，最先完成的人获胜。"
+_TRIPLE_SUBTITLE = "每人三色、共三十颗棋子，三色全部到家才算完成。"
+
+
+@dataclass(frozen=True)
+class GameConfig:
+    """Everything :meth:`Game.new` needs, as chosen on this screen."""
+
+    player_count: int
+    names: tuple[str, ...]
+    colors: tuple[str, ...]
+    rules: RuleSet
+    #: Colours per person: 1 for the ordinary game, 3 for the README's method 2.
+    #: ``colors`` therefore has ``player_count * colors_each`` entries.
+    colors_each: int = 1
+
+
+class MenuScreen(tk.Frame):
+    """The pre-game setup screen."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        on_start: Callable[[GameConfig], None],
+        theme: Theme = DEFAULT,
+    ) -> None:
+        super().__init__(master, background=theme.app_bg)
+        self.theme = theme
+        self.on_start = on_start
+
+        self._mode = tk.StringVar(value="classic")
+        self._count = tk.IntVar(value=3)
+        self._home_lock = tk.BooleanVar(value=True)
+        self._no_stop = tk.BooleanVar(value=False)
+        # Names survive a change of player count -- retyping four names because
+        # you flipped from 4 to 5 and back would be maddening.
+        self._names: dict[int, tk.StringVar] = {
+            i: tk.StringVar(value=f"玩家{i + 1}") for i in range(max(COUNTS))
+        }
+        self._cards: dict[int, dict[str, tk.Widget]] = {}
+        self._renderers: dict[int, BoardRenderer] = {}
+        self._mode_cards: dict[str, dict[str, tk.Widget]] = {}
+        self._mode_renderers: dict[str, BoardRenderer] = {}
+
+        body = tk.Frame(self, background=theme.app_bg)
+        body.place(relx=0.5, rely=0.5, anchor="center")
+        self._body = body
+
+        self._build_title(body)
+        self._build_modes(body)
+        self._build_counts(body)
+        self._build_players(body)
+        self._build_rules(body)
+        self._build_footer(body)
+
+        self._select_mode("classic")
+
+    # ----------------------------------------------------------- layout ----
+
+    def _build_title(self, parent: tk.Misc) -> None:
+        theme = self.theme
+        tk.Label(
+            parent,
+            text="中国跳棋",
+            font=(theme.font_family, theme.title_font_size + 12, "bold"),
+            fg=theme.text_primary,
+            background=theme.app_bg,
+        ).pack(pady=(0, 2))
+        self._subtitle = tk.Label(
+            parent,
+            text=_CLASSIC_SUBTITLE,
+            font=theme.small_font,
+            fg=theme.text_muted,
+            background=theme.app_bg,
+        )
+        self._subtitle.pack(pady=(0, 18))
+
+    def _section(self, parent: tk.Misc, title: str) -> tk.Frame:
+        """A titled row.  The title travels with the row inside one box, so a
+        whole section can be hidden with a single ``pack_forget``."""
+        theme = self.theme
+        box = tk.Frame(parent, background=theme.app_bg)
+        box.pack(fill=tk.X)
+        tk.Label(
+            box,
+            text=title,
+            font=theme.small_font,
+            fg=theme.text_muted,
+            background=theme.app_bg,
+            anchor="w",
+        ).pack(fill=tk.X, pady=(10, 4))
+        frame = tk.Frame(box, background=theme.app_bg)
+        frame.pack(fill=tk.X)
+        return frame
+
+    def _card(self, parent: tk.Misc, mini_size: int) -> dict[str, tk.Widget]:
+        """A preview card: canvas on top, label under it, selectable border."""
+        theme = self.theme
+        card = tk.Frame(
+            parent,
+            background=theme.panel_bg,
+            highlightthickness=2,
+            highlightbackground=theme.panel_bg,
+            bd=0,
+        )
+        card.pack(side=tk.LEFT, padx=5)
+        mini = tk.Canvas(
+            card,
+            width=mini_size,
+            height=mini_size,
+            highlightthickness=0,
+            bd=0,
+            background=theme.app_bg,
+        )
+        mini.pack(padx=8, pady=(8, 2))
+        label = tk.Label(
+            card,
+            text="",
+            font=theme.ui_font,
+            fg=theme.text_primary,
+            background=theme.panel_bg,
+        )
+        label.pack(pady=(0, 6))
+        return {"card": card, "mini": mini, "label": label}
+
+    def _build_modes(self, parent: tk.Misc) -> None:
+        """The two mode cards.
+
+        Laid out sideways rather than as another column of stacked cards: the
+        screen has to stay inside the window's minimum height, and a 6-player
+        table already fills most of it.
+        """
+        theme = self.theme
+        row = self._section(parent, "玩法")
+        for key, title, blurb in MODES:
+            card = tk.Frame(
+                row,
+                background=theme.panel_bg,
+                highlightthickness=2,
+                highlightbackground=theme.panel_bg,
+                bd=0,
+            )
+            card.pack(side=tk.LEFT, padx=5)
+            mini = tk.Canvas(
+                card,
+                width=_MODE_MINI_SIZE,
+                height=_MODE_MINI_SIZE,
+                highlightthickness=0,
+                bd=0,
+                background=theme.app_bg,
+            )
+            mini.pack(side=tk.LEFT, padx=(8, 10), pady=8)
+            text = tk.Frame(card, background=theme.panel_bg)
+            text.pack(side=tk.LEFT, padx=(0, 14))
+            label = tk.Label(
+                text,
+                text=title,
+                font=theme.ui_font,
+                fg=theme.text_primary,
+                background=theme.panel_bg,
+                anchor="w",
+            )
+            label.pack(fill=tk.X)
+            hint = tk.Label(
+                text,
+                text=blurb,
+                font=theme.small_font,
+                fg=theme.text_muted,
+                background=theme.panel_bg,
+                anchor="w",
+            )
+            hint.pack(fill=tk.X)
+
+            parts = {"card": card, "mini": mini, "label": label, "hint": hint}
+            self._mode_renderers[key] = BoardRenderer(mini, theme)
+            self._mode_cards[key] = parts
+            for widget in (card, mini, text, label, hint):
+                widget.bind("<Button-1>", lambda _e, k=key: self._select_mode(k))
+            mini.bind("<Configure>", lambda _e, k=key: self._draw_mode_mini(k))
+
+    def _build_counts(self, parent: tk.Misc) -> None:
+        row = self._section(parent, "人数与座位")
+        # The section box, so the whole row can be hidden in three-colour mode,
+        # where the player count is not the player's to choose.
+        self._counts_box = row.master
+        for count in COUNTS:
+            parts = self._card(row, _MINI_SIZE)
+            parts["label"].configure(text=f"{count} 人")
+            self._renderers[count] = BoardRenderer(parts["mini"], self.theme)
+            self._cards[count] = parts
+            for widget in (parts["card"], parts["mini"], parts["label"]):
+                widget.bind("<Button-1>", lambda _e, n=count: self._select_count(n))
+            # The canvas has no real size until it is mapped; redraw then so the
+            # preview is laid out against actual pixels rather than the request.
+            parts["mini"].bind("<Configure>", lambda _e, n=count: self._draw_mini(n))
+            self._draw_mini(count)
+
+    def _draw_mini(self, count: int) -> None:
+        self._renderers[count].draw_mini(SEATING[count], DEFAULT_COLORS)
+
+    def _draw_mode_mini(self, key: str) -> None:
+        """Each mode card previews the table it would actually deal.
+
+        The classic card follows the chosen player count, so the two cards
+        never show the same picture for different rules.
+        """
+        renderer = self._mode_renderers[key]
+        if key == "triple":
+            renderer.draw_mini(TRIPLE_CAMPS, DEFAULT_COLORS, groups=TRIPLE_SEATING)
+        else:
+            count = self._count.get()
+            renderer.draw_mini(SEATING[count], DEFAULT_COLORS)
+
+    def _build_players(self, parent: tk.Misc) -> None:
+        self._players = self._section(parent, "玩家")
+        self._players_box = self._players.master
+        self._note = tk.Label(
+            parent,
+            text="",
+            font=self.theme.small_font,
+            fg=self.theme.text_muted,
+            background=self.theme.app_bg,
+            anchor="w",
+            justify=tk.LEFT,
+        )
+        self._note.pack(fill=tk.X, pady=(6, 0))
+
+    def _build_rules(self, parent: tk.Misc) -> None:
+        theme = self.theme
+        box = self._section(parent, "规则")
+        for text, var in (
+            ("进家后不得再离开目标三角", self._home_lock),
+            ("不得停留在他人的营地", self._no_stop),
+        ):
+            tk.Checkbutton(
+                box,
+                text=text,
+                variable=var,
+                font=theme.ui_font,
+                fg=theme.text_primary,
+                background=theme.app_bg,
+                activebackground=theme.app_bg,
+                highlightthickness=0,
+                anchor="w",
+            ).pack(fill=tk.X)
+        tk.Label(
+            box,
+            text="跳跃规则：经典邻接跳（隔一子落到紧邻的空位）",
+            font=theme.small_font,
+            fg=theme.text_muted,
+            background=theme.app_bg,
+            anchor="w",
+        ).pack(fill=tk.X, pady=(4, 0))
+
+    def _build_footer(self, parent: tk.Misc) -> None:
+        theme = self.theme
+        tk.Button(
+            parent,
+            text="开始游戏",
+            font=(theme.font_family, theme.ui_font_size + 2, "bold"),
+            command=self.start,
+            highlightbackground=theme.app_bg,
+            default=tk.ACTIVE,
+        ).pack(fill=tk.X, pady=(20, 0))
+
+    # ------------------------------------------------------------ state ----
+
+    def _style_card(self, parts: dict[str, tk.Widget], chosen: bool) -> None:
+        theme = self.theme
+        border = theme.selected_ring if chosen else theme.panel_bg
+        parts["card"].configure(highlightbackground=border, highlightcolor=border)
+        parts["label"].configure(
+            background=mix(theme.panel_bg, theme.selected_ring, 0.18)
+            if chosen
+            else theme.panel_bg,
+            font=(theme.font_family, theme.ui_font_size, "bold")
+            if chosen
+            else theme.ui_font,
+        )
+
+    def _select_mode(self, key: str) -> None:
+        for other, parts in self._mode_cards.items():
+            self._style_card(parts, other == key)
+        self._mode.set(key)
+        triple = key == "triple"
+        self._subtitle.configure(text=_TRIPLE_SUBTITLE if triple else _CLASSIC_SUBTITLE)
+        if triple:
+            # Two players is not a choice here, it is the mode; showing a
+            # count row that cannot be used would only invite clicks.
+            self._counts_box.pack_forget()
+            self._rebuild_players()
+            self._note.configure(text=_TRIPLE_NOTE)
+        else:
+            self._counts_box.pack(fill=tk.X, before=self._players_box)
+            self._select_count(self._count.get())
+        for mode_key in self._mode_cards:
+            self._draw_mode_mini(mode_key)
+
+    def _select_count(self, count: int) -> None:
+        self._count.set(count)
+        for n, parts in self._cards.items():
+            self._style_card(parts, n == count)
+        self._rebuild_players()
+        self._note.configure(text="" if count in BALANCED_COUNTS else _UNBALANCED_NOTE)
+        self._draw_mode_mini("classic")
+
+    def _camp_groups(self) -> tuple[tuple[int, ...], ...]:
+        """The camps each player would own, one tuple per person.
+
+        The single source of truth for the player rows, the colour list and the
+        player count -- both modes are just different groupings of camps.
+        """
+        if self._mode.get() == "triple":
+            return TRIPLE_SEATING
+        return tuple((camp,) for camp in SEATING[self._count.get()])
+
+    def _rebuild_players(self) -> None:
+        theme = self.theme
+        for child in self._players.winfo_children():
+            child.destroy()
+        for i, camps in enumerate(self._camp_groups()):
+            row = tk.Frame(self._players, background=theme.app_bg)
+            row.pack(fill=tk.X, pady=2)
+            self._build_swatches(row, camps)
+            tk.Entry(
+                row,
+                textvariable=self._names[i],
+                font=theme.ui_font,
+                highlightthickness=1,
+                highlightbackground=mix(theme.app_bg, theme.text_muted, 0.4),
+                relief=tk.FLAT,
+                width=22,
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def _build_swatches(self, row: tk.Frame, camps: Sequence[int]) -> None:
+        """One dot + colour name per camp the player runs."""
+        theme = self.theme
+        for camp in camps:
+            swatch = tk.Canvas(
+                row, width=18, height=18, highlightthickness=0, bd=0, background=theme.app_bg
+            )
+            swatch.pack(side=tk.LEFT, padx=(0, 4))
+            color = DEFAULT_COLORS[camp]
+            swatch.create_oval(1, 1, 17, 17, fill=color, outline=mix(color, "#000000", 0.35))
+            tk.Label(
+                row,
+                text=COLOR_NAMES[camp],
+                font=theme.ui_font,
+                fg=theme.text_primary,
+                background=theme.app_bg,
+                width=2,
+            ).pack(side=tk.LEFT, padx=(0, 6))
+        row.pack_slaves()[-1].pack_configure(padx=(0, 10))
+
+    def config_value(self) -> GameConfig:
+        groups = self._camp_groups()
+        names = tuple(
+            (self._names[i].get().strip() or f"玩家{i + 1}") for i in range(len(groups))
+        )
+        colors = tuple(DEFAULT_COLORS[camp] for camps in groups for camp in camps)
+        rules = RuleSet(
+            home_lock=bool(self._home_lock.get()),
+            no_stop_in_foreign_camp=bool(self._no_stop.get()),
+        )
+        return GameConfig(
+            player_count=len(groups),
+            names=names,
+            colors=colors,
+            rules=rules,
+            colors_each=len(groups[0]),
+        )
+
+    def start(self) -> None:
+        self.on_start(self.config_value())
