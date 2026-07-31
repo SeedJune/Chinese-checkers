@@ -26,7 +26,6 @@ anti-aliased sprites instead of stacked ovals.
 
 ```bash
 python3 -m chinese_checkers                    # launch the game
-python3 -m unittest discover -s tests -t .     # run the engine test suite
 ```
 
 Two modes on the start screen:
@@ -49,34 +48,10 @@ Then play:
 | Take back the last move | `Cmd/Ctrl+Z` |
 | Cycle your movable pieces | `Tab` |
 
-Illegal cells are never highlighted and clicking one changes nothing, so an illegal
-move simply cannot be played. When a player gets every piece home they are ranked and
+Illegal cells are never highlighted and clicking one changes nothing, so an illegal move simply cannot be played. When a player gets every piece home they are ranked and
 the rest play on; finished players are skipped automatically.
 
 Rules implemented: classic adjacent jumps (chained, may turn, never mixed with a
 single step); a piece that has entered its target triangle may not leave it; and a
 player wins by filling every hole of the target triangle that an opponent is not
 squatting in, so blocking cannot deadlock the game.
-
-## Project layout
-
-```text
-chinese_checkers/
-├── core/     rules engine — zero dependencies, headless, never imports the UI
-│   ├── coords.py   cube coordinates on the hex lattice
-│   ├── board.py    the 121-hole star, camps, seating tables
-│   ├── rules.py    move generation and validation (the single source of truth)
-│   ├── state.py    occupancy, turn order, rankings, undo history
-│   └── game.py     Game facade + the step-by-step move builder
-├── agents/   Agent protocol — the hook for the search bots and the RL work
-└── ui/       Tkinter front end, built entirely on top of Game
-```
-
-The engine is deliberately UI-agnostic: the planned bots can drive it headlessly, and a
-second front end would only need a new renderer.
-
-Inside it, a *seat* is one colour — ten pieces, one start camp, one target camp — while
-a *player* is the person whose turn it is and may own several seats. The ordinary game
-gives everyone a single seat, so the two coincide; 三色对战 is the reason they are
-separate. Movement and the home-lock rule are per colour, whereas turn order, finishing
-and rankings are per player.
