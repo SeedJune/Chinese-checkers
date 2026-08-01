@@ -42,7 +42,7 @@ Then play:
 | --- | --- |
 | Select a piece | Click one of your glowing marbles |
 | Build a route | Click a highlighted cell — dots are single steps, rings are jumps; keep clicking to chain jumps |
-| Confirm the move | `Enter`, or the 确认走子 button |
+| Confirm the move | Click the current route endpoint again, `Enter`, or the 确认走子 button |
 | Undo one hop of the route | `Backspace` |
 | Deselect | `Esc` |
 | Take back the last move | `Cmd/Ctrl+Z` |

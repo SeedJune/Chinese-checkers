@@ -70,6 +70,8 @@ def mix(a: str, b: str, t: float) -> str:
 #: whole interface is in Chinese, so a family without Han glyphs would render
 #: as tofu boxes.
 _FONT_CANDIDATES: tuple[str, ...] = (
+    "Noto Sans SC Light",
+    "Noto Sans SC",
     "PingFang SC",
     "Heiti SC",
     "STHeiti",
@@ -78,6 +80,14 @@ _FONT_CANDIDATES: tuple[str, ...] = (
     "Arial Unicode MS",
     "Helvetica",
     "TkDefaultFont",
+)
+
+_TITLE_FONT_CANDIDATES: tuple[str, ...] = (
+    "Noto Serif SC",
+    "Noto Serif SC Medium",
+    "STKaiti",
+    "KaiTi",
+    *_FONT_CANDIDATES,
 )
 
 
@@ -108,38 +118,42 @@ class Theme:
     """Every colour, size ratio and font the renderer consults.  No logic."""
 
     # -- chrome ------------------------------------------------------------
-    app_bg: str = "#F4EFE6"        # warm off-white paper
-    panel_bg: str = "#E8E0CF"      # side panel, a touch darker than app_bg
+    # A restrained midnight palette lets the pieces carry the colour while the
+    # surrounding chrome feels more like a contemporary tabletop game than a
+    # default desktop form.
+    app_bg: str = "#07131F"
+    panel_bg: str = "#101F2E"
 
     # -- board -------------------------------------------------------------
-    board_fill: str = "#C08A4E"    # wood tone
-    board_edge: str = "#5E3A1E"    # dark border around the star silhouette
-    board_shadow: str = "#B9AD91"  # drop shadow (solid tone mixed with app_bg)
-    board_border_px: int = 2
+    board_fill: str = "#133C46"    # blue-green lacquer
+    board_edge: str = "#D7B66D"    # brushed-gold border around the star silhouette
+    board_shadow: str = "#020812"  # deep drop shadow
+    board_border_px: int = 3
 
     # Sockets stay close to the board tone -- a high-contrast dark circle reads
     # as a brown marble rather than as an empty hole.
-    hole_fill: str = "#A97742"          # recessed socket
-    hole_rim_light: str = "#D9A867"     # thin highlight arc, bottom-right
-    hole_rim_dark: str = "#7A5227"      # thin shadow arc, top-left
+    hole_fill: str = "#071D28"          # recessed socket
+    hole_rim_light: str = "#5A8586"     # thin highlight arc, bottom-right
+    hole_rim_dark: str = "#020B12"      # thin shadow arc, top-left
 
     # -- overlays ------------------------------------------------------------
-    hover_ring: str = "#3A2E1F"   # neutral ink; a hue here would clash with a seat colour
-    selectable_glow: str = "#F4D35E"
-    selected_ring: str = "#FF5A36"
-    step_target: str = "#38A169"
-    jump_target_ring: str = "#2B6CB0"
-    path_line: str = "#D97706"
-    path_badge_fill: str = "#D97706"
+    hover_ring: str = "#F2E6C7"
+    selectable_glow: str = "#E8C36A"
+    selected_ring: str = "#F3CE78"
+    step_target: str = "#54D6BF"
+    jump_target_ring: str = "#6FA8FF"
+    path_line: str = "#E8C36A"
+    path_badge_fill: str = "#E8C36A"
     path_badge_text: str = "#FFFFFF"
+    commit_ring: str = "#FFF3D1"
     target_camp_tint_strength: float = 0.38   # mixed into board/hole colour
     last_move_marker: str = "#9AA3AF"
 
     # -- text ----------------------------------------------------------------
-    text_primary: str = "#2B2117"
-    text_muted: str = "#7A6F5D"
-    text_danger: str = "#C0392B"
-    text_success: str = "#2E7D32"
+    text_primary: str = "#F4F0E8"
+    text_muted: str = "#9AAEBA"
+    text_danger: str = "#FF8B8B"
+    text_success: str = "#78D8B0"
 
     # -- seats -----------------------------------------------------------
     seat_colors: tuple[str, ...] = DEFAULT_COLORS
@@ -170,15 +184,17 @@ class Theme:
     target_tint_radius: float = 0.60
 
     # -- fonts ---------------------------------------------------------------
-    font_family: str = "PingFang SC"          # resolved to an installed face at runtime
+    font_family: str = "Noto Sans SC Light"   # resolved to an installed face at runtime
     font_candidates: tuple[str, ...] = _FONT_CANDIDATES
+    title_font_family: str = "Noto Serif SC"
+    title_font_candidates: tuple[str, ...] = _TITLE_FONT_CANDIDATES
     title_font_size: int = 22
     ui_font_size: int = 13
     small_font_size: int = 11
 
     @property
     def title_font(self) -> tuple[str, int, str]:
-        return (self.font_family, self.title_font_size, "bold")
+        return (self.title_font_family, self.title_font_size, "bold")
 
     @property
     def ui_font(self) -> tuple[str, int]:
@@ -196,7 +212,11 @@ def resolved(theme: Theme) -> Theme:
     ``DEFAULT`` itself is built at import time, before any Tk root, so it
     keeps a plain guess until resolved.
     """
-    return replace(theme, font_family=pick_font_family(theme.font_candidates))
+    return replace(
+        theme,
+        font_family=pick_font_family(theme.font_candidates),
+        title_font_family=pick_font_family(theme.title_font_candidates),
+    )
 
 
 DEFAULT = Theme()

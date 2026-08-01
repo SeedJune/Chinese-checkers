@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Sequence
 
 from ..core.board import (
@@ -66,6 +67,7 @@ class Scene:
     floating: tuple[int, float, float] | None = None   # (seat, canvas_x, canvas_y): mid-animation piece
     dim_seats: frozenset[int] = frozenset()        # finished players' pieces render desaturated
     active_seat: int | None = None                 # whose turn it is; tints every overlay
+    can_confirm: bool = False                       # current endpoint accepts a confirming click
 
 
 class BoardRenderer:
@@ -86,6 +88,19 @@ class BoardRenderer:
         # the last Python reference to an image is dropped, garbage collector
         # or not.
         self._marble_cache: dict[tuple[str, int], "ImageTk.PhotoImage"] = {}
+        self._backdrop: tk.PhotoImage | None = None
+        # ``PngCanvas`` in the off-screen renderer deliberately implements
+        # only drawing primitives, so the generated bitmap is an enhancement
+        # for the live Tk canvas rather than a new Pillow dependency for QA.
+        if isinstance(canvas, tk.Canvas):
+            asset = Path(__file__).resolve().parents[2] / "assets" / "ui" / "midnight-lacquer-backdrop.png"
+            try:
+                self._backdrop = tk.PhotoImage(file=str(asset))
+            except tk.TclError:
+                # A missing optional art asset should never stop the game
+                # from opening; the solid app background remains a graceful
+                # fallback for source checkouts that omit large binaries.
+                self._backdrop = None
 
     # -- layout --------------------------------------------------------
 
@@ -204,6 +219,7 @@ class BoardRenderer:
         theme = self.theme
         canvas.delete("all")
         canvas.configure(background=theme.app_bg)
+        self._draw_backdrop()
 
         self._draw_silhouette()
         self._draw_target_tint(scene)
@@ -223,6 +239,21 @@ class BoardRenderer:
         if scene.floating is not None:
             seat, x, y = scene.floating
             self._draw_marble_at(x, y, seat, scene, dim=seat in scene.dim_seats)
+
+    def _draw_backdrop(self) -> None:
+        """Centre-crop the generated lacquer art behind the board.
+
+        Tk's native PNG loader keeps this independent of Pillow.  The image is
+        deliberately larger than the minimum game window, so centring instead
+        of scaling preserves its fine paper-and-gold texture on every resize.
+        """
+        if self._backdrop is not None:
+            self.canvas.create_image(
+                self._width / 2,
+                self._height / 2,
+                image=self._backdrop,
+                anchor=tk.CENTER,
+            )
 
     # -- silhouette / holes -------------------------------------------------
 
@@ -250,17 +281,22 @@ class BoardRenderer:
             joinstyle=tk.ROUND,
         )
 
-        # Faint inner bevel: a slightly shrunk, lighter copy of the same
-        # polygon gives the wood a subtle domed highlight without needing
-        # true alpha blending.
+        # A pair of inset lacquer layers makes the board read as a crafted
+        # object rather than a single flat SVG-like polygon.  It stays fully
+        # geometric, so every hole remains precisely registered on resize.
         cx = sum(p[0] for p in outline_pts) / len(outline_pts)
         cy = sum(p[1] for p in outline_pts) / len(outline_pts)
-        inset = 0.9
         bevel_flat: list[float] = []
         for x, y in outline_pts:
-            bevel_flat += [cx + (x - cx) * inset, cy + (y - cy) * inset]
+            bevel_flat += [cx + (x - cx) * 0.965, cy + (y - cy) * 0.965]
         canvas.create_polygon(
-            *bevel_flat, fill=shade(theme.board_fill, 1.12), outline=""
+            *bevel_flat, fill=shade(theme.board_fill, 1.18), outline=""
+        )
+        core_flat: list[float] = []
+        for x, y in outline_pts:
+            core_flat += [cx + (x - cx) * 0.925, cy + (y - cy) * 0.925]
+        canvas.create_polygon(
+            *core_flat, fill=theme.board_fill, outline=""
         )
 
     def _draw_holes(self) -> None:
@@ -270,19 +306,26 @@ class BoardRenderer:
         rim_w = _w(theme.hole_rim_width * self._cell_size)
         for cell in BOARD_SORTED:
             x, y = self.center_of(cell)
+            # Broad umbra first, then the narrower socket: this small two-step
+            # depth cue keeps the empty cells quiet but convincingly recessed.
+            outer = r * 1.13
+            canvas.create_oval(
+                x - outer, y - outer, x + outer, y + outer,
+                fill=theme.hole_rim_dark, outline="",
+            )
             canvas.create_oval(
                 x - r, y - r, x + r, y + r, fill=theme.hole_fill, outline=""
             )
             # Shadow arc, upper-left -- reads as the far recessed wall.
             canvas.create_arc(
                 x - r, y - r, x + r, y + r,
-                start=100, extent=140,
+                start=105, extent=150,
                 style=tk.ARC, outline=theme.hole_rim_dark, width=rim_w,
             )
             # Highlight arc, lower-right -- catches the (implied) light.
             canvas.create_arc(
                 x - r, y - r, x + r, y + r,
-                start=280, extent=140,
+                start=285, extent=135,
                 style=tk.ARC, outline=theme.hole_rim_light, width=rim_w,
             )
 
@@ -323,39 +366,43 @@ class BoardRenderer:
             self._draw_tk_marble(x, y, color, radius)
 
     def _draw_tk_marble(self, x: float, y: float, color: str, r: float) -> None:
-        """Glossy sphere faked with concentric ovals, no Pillow required."""
+        """Glass-like marble using layered, offset radial colour stops.
+
+        Tk has no gradients, but a dozen softly shifting ellipses give the
+        same light direction as the optional high-resolution Pillow path.  It
+        looks deliberate at large sizes and stays clean at tiny board sizes.
+        """
         canvas = self.canvas
         outline_w = _w(self.theme.marble_outline_width * self._cell_size)
-
-        # Base sphere, slightly darkened so the lighter layers on top read
-        # as a highlight rather than washing the whole marble out.
+        # Contact shadow and a deep outer glass rim.
+        canvas.create_oval(
+            x - r * 0.90, y - r * 0.76, x + r * 0.98, y + r * 1.10,
+            fill=shade(color, 0.36), outline="",
+        )
+        canvas.create_oval(x - r, y - r, x + r, y + r, fill=shade(color, 0.56), outline="")
+        stops = 12
+        for i in range(1, stops + 1):
+            t = i / stops
+            rr = r * (1.0 - 0.053 * i)
+            # Each brighter inner stop migrates upper-left towards the light.
+            ox = -r * 0.18 * t
+            oy = -r * 0.20 * t
+            lit = mix(shade(color, 0.78), mix(color, "#FFF7E4", 0.42), t * 0.84)
+            canvas.create_oval(x - rr + ox, y - rr + oy, x + rr + ox, y + rr + oy, fill=lit, outline="")
+        # Small warm specular spot plus a cool reflected crescent make the
+        # pieces read as polished coloured glass, not plastic buttons.
+        canvas.create_oval(
+            x - r * 0.57, y - r * 0.61, x - r * 0.12, y - r * 0.18,
+            fill="#FFF9E9", outline="",
+        )
+        canvas.create_arc(
+            x - r * 0.79, y - r * 0.79, x + r * 0.79, y + r * 0.79,
+            start=285, extent=92, style=tk.ARC,
+            outline=mix(color, "#C9EFF0", 0.72), width=max(1, outline_w),
+        )
         canvas.create_oval(
             x - r, y - r, x + r, y + r,
-            fill=shade(color, 0.82), outline=""
-        )
-        r1 = r * 0.85
-        ox1 = r * 0.08
-        canvas.create_oval(
-            x - r1 - ox1, y - r1 - ox1, x + r1 - ox1, y + r1 - ox1,
-            fill=color, outline=""
-        )
-        r2 = r * 0.55
-        ox2 = r * 0.24
-        canvas.create_oval(
-            x - r2 - ox2, y - r2 - ox2, x + r2 - ox2, y + r2 - ox2,
-            fill=mix(color, "#FFFFFF", 0.38), outline=""
-        )
-        r3 = r * 0.24
-        ox3 = r * 0.40
-        oy3 = r * 0.44
-        canvas.create_oval(
-            x - r3 - ox3, y - r3 - oy3, x + r3 - ox3, y + r3 - oy3,
-            fill=mix(color, "#FFFFFF", 0.85), outline=""
-        )
-        # Thin dark outline on top, unfilled, to seat the sphere on the board.
-        canvas.create_oval(
-            x - r, y - r, x + r, y + r,
-            outline=shade(color, 0.45), width=outline_w
+            outline=shade(color, 0.30), width=outline_w
         )
 
     def _blit_pil_marble(self, x: float, y: float, color: str, radius: float) -> None:
@@ -387,31 +434,32 @@ class BoardRenderer:
 
         draw.ellipse(
             [cx - r, cy - r, cx + r, cy + r],
-            fill=self._hex_to_rgba(shade(color, 0.82)),
+            fill=self._hex_to_rgba(shade(color, 0.56)),
         )
-        r2, o2 = r * 0.82, r * 0.10
-        draw.ellipse(
-            [cx - r2 - o2, cy - r2 - o2, cx + r2 - o2, cy + r2 - o2],
-            fill=self._hex_to_rgba(color),
-        )
-        r3, o3 = r * 0.5, r * 0.26
-        draw.ellipse(
-            [cx - r3 - o3, cy - r3 - o3, cx + r3 - o3, cy + r3 - o3],
-            fill=self._hex_to_rgba(mix(color, "#FFFFFF", 0.4)),
-        )
-        # Soft specular highlight: stacked translucent white ellipses give a
-        # real radial falloff, something the plain-Tk fallback can't do.
-        for frac, alpha in ((0.34, 40), (0.26, 80), (0.18, 130), (0.10, 200)):
-            rr = r * frac
-            ox = r * 0.36
-            oy = r * 0.40
+        # Keep the same warm upper-left lighting as the dependency-free Tk
+        # renderer; Pillow merely anti-aliases its colour stops.
+        for i in range(1, 13):
+            t = i / 12
+            rr = r * (1.0 - 0.053 * i)
+            ox = -r * 0.18 * t
+            oy = -r * 0.20 * t
+            lit = mix(shade(color, 0.78), mix(color, "#FFF7E4", 0.42), t * 0.84)
             draw.ellipse(
-                [cx - rr - ox, cy - rr - oy, cx + rr - ox, cy + rr - oy],
-                fill=(255, 255, 255, alpha),
+                [cx - rr + ox, cy - rr + oy, cx + rr + ox, cy + rr + oy],
+                fill=self._hex_to_rgba(lit),
             )
         draw.ellipse(
+            [cx - r * 0.57, cy - r * 0.61, cx - r * 0.12, cy - r * 0.18],
+            fill=(255, 249, 233, 255),
+        )
+        draw.arc(
+            [cx - r * 0.79, cy - r * 0.79, cx + r * 0.79, cy + r * 0.79],
+            start=285, end=377, fill=self._hex_to_rgba(mix(color, "#C9EFF0", 0.72)),
+            width=max(1, scale),
+        )
+        draw.ellipse(
             [cx - r, cy - r, cx + r, cy + r],
-            outline=self._hex_to_rgba(shade(color, 0.45)),
+            outline=self._hex_to_rgba(shade(color, 0.30)),
             width=max(1, scale),
         )
         img = img.resize((d, d), Image.LANCZOS)
@@ -545,6 +593,16 @@ class BoardRenderer:
                 # faces and degrade to tofu boxes when they are.
                 x, y, text=str(i), fill=theme.path_badge_text,
                 font=theme.small_font,
+            )
+        # The last stop is also the primary mouse confirmation affordance.  A
+        # quiet double halo communicates "click here again" without putting
+        # a permanent extra button in the player's path.
+        if scene.can_confirm:
+            x, y = self.center_of(scene.path[-1])
+            commit_r = r * 1.58
+            canvas.create_oval(
+                x - commit_r, y - commit_r, x + commit_r, y + commit_r,
+                outline=theme.commit_ring, width=_w(w * 0.75),
             )
 
     def _draw_selected(self, scene: Scene) -> None:

@@ -117,6 +117,7 @@ class BoardView(tk.Canvas):
             # to grey out all three of their colours.
             dim_seats=frozenset(s for p in state.rankings for s in state.seats_of(p)),
             active_seat=game.active_seat.index,
+            can_confirm=game.can_confirm,
         )
 
     def ensure_layout(self) -> None:
@@ -161,7 +162,12 @@ class BoardView(tk.Canvas):
         if game.phase is Phase.IDLE:
             return game.selectable()
         opts = game.options()
-        return opts["steps"] | opts["jumps"] | game.selectable() | {game.path[0]}
+        cells = opts["steps"] | opts["jumps"] | game.selectable() | {game.path[0]}
+        # A completed route is intentionally clickable once more: this is the
+        # mouse-first equivalent of pressing Enter to commit it.
+        if game.can_confirm:
+            cells = cells | {game.path[-1]}
+        return cells
 
     def _set_cursor(self, name: str) -> None:
         if name != self._cursor:
@@ -197,36 +203,43 @@ class BoardView(tk.Canvas):
                 game.select(cell)
                 self.on_status("已选中棋子，点击高亮位置落子。", "info")
             else:
-                self._click_while_building(cell)
+                if self._click_while_building(cell):
+                    self._hover = None
+                    return
         except IllegalMove as exc:
             # The engine's message is already written for a player to read.
             self.on_status(str(exc), "error")
         self._hover = None
         self.refresh()
 
-    def _click_while_building(self, cell: Hex) -> None:
+    def _click_while_building(self, cell: Hex) -> bool:
         """Second and later clicks of a move, in SELECTED/CHAINING/STEPPED."""
         game = self.game
         opts = game.options()
+        if cell == game.path[-1] and game.can_confirm:
+            self.on_status("已确认路线，正在走子。", "success")
+            self.confirm_move()
+            return True
         if cell in opts["steps"] or cell in opts["jumps"]:
             game.extend(cell)
             if game.phase is Phase.CHAINING:
-                self.on_status("可以继续跳跃，或按 Enter 确认。", "info")
+                self.on_status("可以继续跳跃，或再次点击当前落点确认。", "info")
             else:
-                self.on_status("按 Enter 确认走子。", "info")
-            return
+                self.on_status("再次点击当前落点确认走子。", "info")
+            return False
         if cell == game.path[0]:
             game.cancel()
             self.on_status("已取消选择。", "info")
-            return
+            return False
         if cell in game.selectable():
             # Switching pieces mid-build is a normal thing to want; do it in
             # one click instead of demanding an explicit cancel first.
             game.cancel()
             game.select(cell)
             self.on_status("已改选棋子，点击高亮位置落子。", "info")
-            return
+            return False
         game.extend(cell)  # guaranteed to raise, with the engine's wording
+        return False  # makes the control flow explicit for type checkers
 
     # --------------------------------------------------------- commands ----
 

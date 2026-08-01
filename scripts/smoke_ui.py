@@ -458,7 +458,7 @@ def check_game(app: App, out: Path) -> None:
     check(
         "按钮标签带快捷键",
         [app.panel.buttons[k].cget("text") for k in ("confirm", "rollback", "cancel", "undo")]
-        == ["确认走子 (Enter)", "回退一跳 (⌫)", "取消选择 (Esc)", "悔棋 (⌘Z)"],
+        == ["确认走子 · 或再点落点", "回退一跳 (⌫)", "取消选择 (Esc)", "悔棋 (⌘Z)"],
     )
     check("初始 30 颗棋子", len(game.state.occupancy) == 30)
     check("初始阶段 IDLE", game.phase is Phase.IDLE)

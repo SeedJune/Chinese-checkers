@@ -263,7 +263,7 @@ class SidePanel(tk.Frame):
         box.pack(fill=tk.X, padx=pad)
 
         specs = (
-            ("confirm", "确认走子 (Enter)", on_confirm),
+            ("confirm", "确认走子 · 或再点落点", on_confirm),
             ("rollback", "回退一跳 (⌫)", on_rollback),
             ("cancel", "取消选择 (Esc)", on_cancel),
             ("undo", "悔棋 (⌘Z)", on_undo),
@@ -275,8 +275,15 @@ class SidePanel(tk.Frame):
                 text=label,
                 font=theme.ui_font,
                 command=command,
-                # macOS draws the button itself; ``highlightbackground`` is the
-                # only knob that keeps the surrounding pixels off-white.
+                fg=theme.text_primary,
+                bg=mix(theme.panel_bg, theme.board_fill, 0.52),
+                activeforeground=theme.text_primary,
+                activebackground=mix(theme.panel_bg, theme.board_edge, 0.20),
+                disabledforeground=mix(theme.text_muted, theme.panel_bg, 0.35),
+                relief=tk.FLAT,
+                bd=0,
+                padx=10,
+                pady=7,
                 highlightbackground=theme.panel_bg,
                 default=tk.ACTIVE if key == "confirm" else tk.NORMAL,
             )

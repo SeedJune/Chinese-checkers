@@ -117,14 +117,16 @@ def player_camps(player_count: int, colors_each: int = 1) -> tuple[tuple[int, ..
         return TRIPLE_SEATING
     raise ValueError(f"不支持的每人颜色数：{colors_each}。")
 
-#: Default colour per camp, matching the artwork in ``assets/3.jpg``.
+#: Default colour per camp.  The palette is deliberately jewel-toned rather
+#: than fully saturated: it remains distinct on the midnight lacquer board
+#: while letting the highlights make every marble feel like real glass.
 DEFAULT_COLORS: tuple[str, ...] = (
-    "#D6323C",  # 0 red      top
-    "#2C6FD1",  # 1 blue     upper right
-    "#2FA84F",  # 2 green    lower right
-    "#7B3FB5",  # 3 purple   bottom
-    "#E8802A",  # 4 orange   lower left
-    "#E5C127",  # 5 yellow   upper left
+    "#B94E62",  # 0 garnet   top
+    "#5675B9",  # 1 sapphire upper right
+    "#46977E",  # 2 jade     lower right
+    "#8064A5",  # 3 amethyst bottom
+    "#C7834B",  # 4 amber    lower left
+    "#BFA65B",  # 5 citrine  upper left
 )
 
 #: Human-readable colour names, same order as :data:`DEFAULT_COLORS`.

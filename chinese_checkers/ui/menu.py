@@ -121,7 +121,7 @@ class MenuScreen(tk.Frame):
         tk.Label(
             parent,
             text="中国跳棋",
-            font=(theme.font_family, theme.title_font_size + 12, "bold"),
+            font=(theme.title_font_family, theme.title_font_size + 12, "bold"),
             fg=theme.text_primary,
             background=theme.app_bg,
         ).pack(pady=(0, 2))
@@ -299,6 +299,8 @@ class MenuScreen(tk.Frame):
                 fg=theme.text_primary,
                 background=theme.app_bg,
                 activebackground=theme.app_bg,
+                activeforeground=theme.text_primary,
+                selectcolor=theme.panel_bg,
                 highlightthickness=0,
                 anchor="w",
             ).pack(fill=tk.X)
@@ -318,6 +320,14 @@ class MenuScreen(tk.Frame):
             text="开始游戏",
             font=(theme.font_family, theme.ui_font_size + 2, "bold"),
             command=self.start,
+            foreground=theme.text_primary,
+            background=mix(theme.board_fill, theme.board_edge, 0.24),
+            activeforeground=theme.text_primary,
+            activebackground=mix(theme.board_fill, theme.board_edge, 0.48),
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=10,
             highlightbackground=theme.app_bg,
             default=tk.ACTIVE,
         ).pack(fill=tk.X, pady=(20, 0))
