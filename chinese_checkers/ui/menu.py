@@ -23,6 +23,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from ..agents import LEVELS
 from ..core.board import (
     BALANCED_COUNTS,
     COLOR_NAMES,
@@ -60,6 +61,13 @@ _TRIPLE_NOTE = "每人执三色，各色分别驶向自己正对面的角；两�
 _CLASSIC_SUBTITLE = "把自己全部十颗棋子送进对面的三角，最先完成的人获胜。"
 _TRIPLE_SUBTITLE = "每人三色、共三十颗棋子，三色全部到家才算完成。"
 
+#: ``(key, label)`` for the seat kinds, in chip order.
+SEAT_KINDS: tuple[tuple[str, str], ...] = (("human", "人类"), ("bot", "电脑"))
+
+_BOT_NAME = "电脑"
+
+_BOT_NOTE = "电脑使用 α-β 剪枝的极小化极大搜索；难度决定它往前看多少步。"
+
 
 @dataclass(frozen=True)
 class GameConfig:
@@ -72,6 +80,10 @@ class GameConfig:
     #: Colours per person: 1 for the ordinary game, 3 for the README's method 2.
     #: ``colors`` therefore has ``player_count * colors_each`` entries.
     colors_each: int = 1
+    #: One entry per player: ``None`` for a human, otherwise the difficulty key
+    #: of the bot that plays that seat.  Empty means "everyone is human", which
+    #: is what a config built without this field means.
+    bots: tuple[str | None, ...] = ()
 
 
 class MenuScreen(tk.Frame):
@@ -96,6 +108,12 @@ class MenuScreen(tk.Frame):
         self._names: dict[int, tk.StringVar] = {
             i: tk.StringVar(value=f"玩家{i + 1}") for i in range(max(COUNTS))
         }
+        # Who plays each seat.  Kept for every possible player index (like the
+        # names) so flipping between modes never forgets a choice.
+        self._bot_kinds: dict[int, tk.StringVar] = {
+            i: tk.StringVar(value="human") for i in range(max(COUNTS))
+        }
+        self._bot_level = tk.StringVar(value="normal")
         self._cards: dict[int, dict[str, tk.Widget]] = {}
         self._renderers: dict[int, BoardRenderer] = {}
         self._mode_cards: dict[str, dict[str, tk.Widget]] = {}
@@ -109,6 +127,7 @@ class MenuScreen(tk.Frame):
         self._build_modes(body)
         self._build_counts(body)
         self._build_players(body)
+        self._build_bot_level(body)
         self._build_rules(body)
         self._build_footer(body)
 
@@ -181,6 +200,60 @@ class MenuScreen(tk.Frame):
         )
         label.pack(pady=(0, 6))
         return {"card": card, "mini": mini, "label": label}
+
+    def _choice_chips(
+        self,
+        parent: tk.Misc,
+        options: Sequence[tuple[str, str]],
+        var: tk.StringVar,
+        on_change: Callable[[str], None] | None = None,
+        side: str = tk.LEFT,
+    ) -> dict[str, tk.Button]:
+        """A radio group drawn as flat chips.
+
+        Hand-built rather than ``ttk.OptionMenu`` or ``Radiobutton`` because
+        the rest of this screen is hand-drawn: a native widget here would be
+        the one thing on the menu wearing the desktop's own chrome.
+        """
+        theme = self.theme
+        buttons: dict[str, tk.Button] = {}
+
+        def restyle() -> None:
+            for key, button in buttons.items():
+                chosen = var.get() == key
+                button.configure(
+                    background=mix(theme.panel_bg, theme.selected_ring, 0.30)
+                    if chosen
+                    else theme.panel_bg,
+                    foreground=theme.text_primary if chosen else theme.text_muted,
+                    font=(theme.font_family, theme.small_font_size, "bold")
+                    if chosen
+                    else theme.small_font,
+                )
+
+        def choose(key: str) -> None:
+            var.set(key)
+            restyle()
+            if on_change is not None:
+                on_change(key)
+
+        for key, label in options:
+            button = tk.Button(
+                parent,
+                text=label,
+                command=lambda k=key: choose(k),
+                relief=tk.FLAT,
+                bd=0,
+                padx=9,
+                pady=3,
+                activeforeground=theme.text_primary,
+                activebackground=mix(theme.panel_bg, theme.selected_ring, 0.45),
+                highlightthickness=0,
+            )
+            button.pack(side=side, padx=2)
+            buttons[key] = button
+        restyle()
+        return buttons
 
     def _build_modes(self, parent: tk.Misc) -> None:
         """The two mode cards.
@@ -284,9 +357,24 @@ class MenuScreen(tk.Frame):
         )
         self._note.pack(fill=tk.X, pady=(6, 0))
 
+    def _build_bot_level(self, parent: tk.Misc) -> None:
+        """The difficulty row.  Only shown once somebody is set to 电脑."""
+        row = self._section(parent, "电脑难度")
+        self._level_box = row.master
+        self._choice_chips(row, LEVELS, self._bot_level)
+        tk.Label(
+            row,
+            text=_BOT_NOTE,
+            font=self.theme.small_font,
+            fg=self.theme.text_muted,
+            background=self.theme.app_bg,
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
     def _build_rules(self, parent: tk.Misc) -> None:
         theme = self.theme
         box = self._section(parent, "规则")
+        self._rules_box = box.master
         for text, var in (
             ("进家后不得再离开目标三角", self._home_lock),
             ("不得停留在他人的营地", self._no_stop),
@@ -387,10 +475,21 @@ class MenuScreen(tk.Frame):
         theme = self.theme
         for child in self._players.winfo_children():
             child.destroy()
-        for i, camps in enumerate(self._camp_groups()):
+        groups = self._camp_groups()
+        for i, camps in enumerate(groups):
             row = tk.Frame(self._players, background=theme.app_bg)
             row.pack(fill=tk.X, pady=2)
             self._build_swatches(row, camps)
+            # Packed before the entry: the entry expands into whatever cavity
+            # is left, so anything packed after it would get no width at all.
+            if self._bots_available():
+                self._choice_chips(
+                    row,
+                    SEAT_KINDS,
+                    self._bot_kinds[i],
+                    on_change=lambda kind, index=i: self._on_seat_kind(index, kind),
+                    side=tk.RIGHT,
+                )
             tk.Entry(
                 row,
                 textvariable=self._names[i],
@@ -400,6 +499,41 @@ class MenuScreen(tk.Frame):
                 relief=tk.FLAT,
                 width=22,
             ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._sync_bot_level()
+
+    def _bots_available(self) -> bool:
+        """Whether this table can be played against the bot.
+
+        Exactly two players, which is what alpha-beta needs -- and which the
+        three-colour mode also satisfies, since there each *person* owns three
+        colours but there are still only two of them.
+        """
+        return len(self._camp_groups()) == 2
+
+    def _on_seat_kind(self, index: int, kind: str) -> None:
+        """Keep the default name honest when a seat changes hands."""
+        name = self._names[index]
+        if kind == "bot" and name.get().strip() in ("", f"玩家{index + 1}"):
+            name.set(_BOT_NAME)
+        elif kind == "human" and name.get().strip() in ("", _BOT_NAME):
+            name.set(f"玩家{index + 1}")
+        self._sync_bot_level()
+
+    def _sync_bot_level(self) -> None:
+        if any(level is not None for level in self._bot_levels()):
+            self._level_box.pack(fill=tk.X, before=self._rules_box)
+        else:
+            self._level_box.pack_forget()
+
+    def _bot_levels(self) -> tuple[str | None, ...]:
+        """One entry per player: the difficulty they play at, or ``None``."""
+        if not self._bots_available():
+            return (None,) * len(self._camp_groups())
+        level = self._bot_level.get()
+        return tuple(
+            level if self._bot_kinds[i].get() == "bot" else None
+            for i in range(len(self._camp_groups()))
+        )
 
     def _build_swatches(self, row: tk.Frame, camps: Sequence[int]) -> None:
         """One dot + colour name per camp the player runs."""
@@ -437,6 +571,7 @@ class MenuScreen(tk.Frame):
             colors=colors,
             rules=rules,
             colors_each=len(groups[0]),
+            bots=self._bot_levels(),
         )
 
     def start(self) -> None:

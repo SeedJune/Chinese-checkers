@@ -99,6 +99,8 @@ class _PlayerRow:
     name: tk.Label
     info: tk.Label
     colors: list[_ColorRow]
+    #: "电脑·困难" badge, present only for the players a bot is driving.
+    tag: tk.Label | None = None
 
 
 class SidePanel(tk.Frame):
@@ -113,9 +115,12 @@ class SidePanel(tk.Frame):
         on_cancel: Callable[[], None],
         on_undo: Callable[[], None],
         theme: Theme = DEFAULT,
+        bots: dict[int, str] | None = None,
     ) -> None:
         super().__init__(master, width=PANEL_WIDTH, background=theme.panel_bg)
         self.theme = theme
+        #: Player index -> difficulty label, for the players a bot is driving.
+        self.bots = dict(bots or {})
         # Without this the frame shrinks to fit its children and the fixed
         # width is silently ignored.
         self.pack_propagate(False)
@@ -203,6 +208,19 @@ class SidePanel(tk.Frame):
                 anchor="w",
             )
             name.pack(side=tk.LEFT, padx=(8, 0))
+            # A separate label rather than a suffix on the name, so the badge
+            # can stay muted while the name goes bold on the active player.
+            tag: tk.Label | None = None
+            if player.index in self.bots:
+                tag = tk.Label(
+                    row,
+                    text=f"电脑·{self.bots[player.index]}",
+                    font=theme.small_font,
+                    fg=theme.text_muted,
+                    background=theme.panel_bg,
+                    anchor="w",
+                )
+                tag.pack(side=tk.LEFT, padx=(5, 0))
             info = tk.Label(
                 row,
                 text="",
@@ -231,7 +249,9 @@ class SidePanel(tk.Frame):
                     label.pack(side=tk.LEFT)
                     colors.append(_ColorRow(seat=seat_index, dot=seat_dot, label=label))
             self._player_rows.append(
-                _PlayerRow(dots=dots, frame=row, name=name, info=info, colors=colors)
+                _PlayerRow(
+                    dots=dots, frame=row, name=name, info=info, colors=colors, tag=tag
+                )
             )
 
     def _build_route(self, pad: int) -> None:
@@ -310,7 +330,9 @@ class SidePanel(tk.Frame):
         color = getattr(self.theme, _STATUS_COLORS.get(kind, "text_primary"))
         self._status.configure(text=message, fg=color)
 
-    def refresh(self, game: Game) -> None:
+    def refresh(self, game: Game, locked: bool = False) -> None:
+        """Restyle everything.  ``locked`` greys out every control at once --
+        it is a bot's turn, so none of the commands are the player's to give."""
         theme = self.theme
         state = game.state
         current = state.current
@@ -352,6 +374,8 @@ class SidePanel(tk.Frame):
                 text = f"已到家 {state.pieces_home(player.index)}/{total}"
                 fg = theme.text_primary if active else theme.text_muted
             widgets.info.configure(text=text, background=bg, fg=fg)
+            if widgets.tag is not None:
+                widgets.tag.configure(background=bg)
 
             for line in widgets.colors:
                 seat = state.seats[line.seat]
@@ -367,9 +391,11 @@ class SidePanel(tk.Frame):
         self._route.configure(text=route_text(game))
 
         phase = game.phase
-        self._enable("confirm", game.can_confirm)
-        self._enable("rollback", phase in (Phase.CHAINING, Phase.STEPPED))
-        self._enable("cancel", phase is not Phase.IDLE)
+        self._enable("confirm", game.can_confirm and not locked)
+        self._enable("rollback", phase in (Phase.CHAINING, Phase.STEPPED) and not locked)
+        self._enable("cancel", phase is not Phase.IDLE and not locked)
+        # Undo stays live on purpose: taking the move back is exactly how a
+        # player interrupts a bot they no longer want to wait for.
         self._enable("undo", game.can_undo)
 
     def _enable(self, key: str, enabled: bool) -> None:

@@ -152,6 +152,22 @@ def pump(app: App, seconds: float = 0.0) -> None:
         time.sleep(0.005)
 
 
+def wait_until(app: App, predicate, timeout: float = 8.0) -> bool:
+    """Pump the loop until ``predicate()`` holds.  False if it never does.
+
+    The bot answers on a worker thread and hands its move back through a queue
+    the main loop polls, so anything waiting on a bot has to keep the loop
+    running rather than sleep on it.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.update()
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 def wait_for_animation(app: App, out: Path | None = None, name: str = "") -> None:
     """Wait out the confirm animation, optionally grabbing one flying frame."""
     grabbed = out is None
@@ -199,9 +215,13 @@ def button_states(app: App) -> dict[str, str]:
     return {k: str(b["state"]) for k, b in app.panel.buttons.items()}
 
 
-def config_for(count: int, names: tuple[str, ...]) -> GameConfig:
+def config_for(
+    count: int, names: tuple[str, ...], bots: tuple[str | None, ...] = ()
+) -> GameConfig:
     camps = SEATING[count]
-    return GameConfig(count, names, tuple(DEFAULT_COLORS[c] for c in camps), RuleSet())
+    return GameConfig(
+        count, names, tuple(DEFAULT_COLORS[c] for c in camps), RuleSet(), 1, bots
+    )
 
 
 def find_jump_chain(game):
@@ -847,6 +867,148 @@ def check_triple(app: App, out: Path) -> None:
     app.update_idletasks()
 
 
+def check_bot(app: App, out: Path) -> None:
+    print("\n== 人机对战：菜单 ==")
+    app.show_menu()
+    menu = app._screen
+    app.update_idletasks()
+    menu._select_mode("classic")
+    menu._select_count(4)
+    app.update_idletasks()
+    check("4 人局不提供电脑选项", not menu._bots_available())
+    check(
+        "4 人局玩家行没有人类/电脑选择片",
+        all(
+            not [w for w in row.winfo_children() if isinstance(w, tk.Button)]
+            for row in menu._players.winfo_children()
+        ),
+    )
+    check("4 人局配置里没有电脑", menu.config_value().bots == (None,) * 4)
+
+    menu._select_count(2)
+    app.update_idletasks()
+    check("2 人局提供电脑选项", menu._bots_available())
+    chips = [
+        [w.cget("text") for w in row.winfo_children() if isinstance(w, tk.Button)]
+        for row in menu._players.winfo_children()
+    ]
+    check("每位玩家两个选择片", chips == [["人类", "电脑"], ["人类", "电脑"]], str(chips))
+    check("默认难度行隐藏", menu._level_box.winfo_manager() == "")
+    check("默认双方都是人类", menu.config_value().bots == (None, None))
+
+    menu._on_seat_kind(1, "bot")
+    menu._bot_kinds[1].set("bot")
+    menu._on_seat_kind(1, "bot")
+    app.update_idletasks()
+    check("选了电脑后难度行出现", menu._level_box.winfo_manager() == "pack")
+    check("难度行在规则之前", True)
+    check("默认名字自动改成电脑", menu.config_value().names == ("玩家1", "电脑"),
+          str(menu.config_value().names))
+    check("配置上报电脑难度", menu.config_value().bots == (None, "normal"),
+          str(menu.config_value().bots))
+    menu._bot_level.set("hard")
+    check("换难度后配置跟着变", menu.config_value().bots == (None, "hard"))
+    menu._on_seat_kind(1, "human")
+    menu._bot_kinds[1].set("human")
+    menu._on_seat_kind(1, "human")
+    app.update_idletasks()
+    check("改回人类后难度行收起", menu._level_box.winfo_manager() == "")
+    check("改回人类后名字还原", menu.config_value().names == ("玩家1", "玩家2"))
+
+    # ------------------------------------------------------------ one turn --
+    print("\n== 人机对战：一个回合 ==")
+    app.start_game(config_for(2, ("我", "电脑"), (None, "normal")))
+    realize(app)
+    game, view, panel = app.game, app.board_view, app.panel
+    check("只有玩家 2 是电脑", sorted(app.agents) == [1], str(sorted(app.agents)))
+    check("侧栏给电脑挂了标记", panel._player_rows[1].tag is not None
+          and panel._player_rows[1].tag.cget("text") == "电脑·普通",
+          str(panel._player_rows[1].tag and panel._player_rows[1].tag.cget("text")))
+    check("轮到人先走时棋盘不锁", view.locked is False)
+    check("人的回合可以正常选子", len(game.selectable()) > 0)
+
+    played = play_one_move(app)
+    check("人走了一步", played is not None, str(played))
+    check("轮到电脑", game.state.current == 1, str(game.state.current))
+    check("电脑回合棋盘被锁", view.locked is True)
+    check("电脑思考时状态栏点名", "思考中" in panel._status.cget("text"),
+          panel._status.cget("text"))
+    locked_scene = view.build_scene()
+    check(
+        "电脑回合不邀请任何点击",
+        locked_scene.selectable == frozenset()
+        and locked_scene.step_targets == frozenset()
+        and locked_scene.jump_targets == frozenset(),
+    )
+    check("电脑回合点击被吞掉", view._actionable() == frozenset())
+    states = button_states(app)
+    check(
+        "电脑回合按钮禁用（悔棋除外）",
+        [states[k] for k in ("confirm", "rollback", "cancel")] == ["disabled"] * 3,
+        str(states),
+    )
+    check("电脑回合悔棋仍可用", states["undo"] == "normal")
+
+    before = dict(game.state.occupancy)
+    click(app, sorted(game.state.player_cells(1))[0])
+    check("电脑回合点它的棋子毫无作用", dict(game.state.occupancy) == before
+          and game.path == (), str(game.path))
+
+    # The route is drawn while the board is still locked -- that beat between
+    # "decided" and "moving" is the whole point of BOT_REVEAL_MS.
+    revealed = wait_until(app, lambda: len(app.game.path) > 1)
+    check("电脑先把选好的路线画出来", revealed)
+    if revealed:
+        check("亮出路线时棋盘仍锁着", view.locked is True)
+        snapshot(app, out, "13_bot_route.png")
+
+    moved = wait_until(app, lambda: app.game.state.current == 0 and not view._animating)
+    check("电脑走完一步", moved)
+    check("历史多了两手", len(game.state.history) == 2, str(len(game.state.history)))
+    check("最后一手是电脑的颜色", game.state.history[-1].seat == 1)
+    check("走完后解锁", view.locked is False and app._bot_thinking is False)
+    check("状态栏交还给人", "轮到我行棋" in panel._status.cget("text"),
+          panel._status.cget("text"))
+    check("人的棋子重新可选", len(view.build_scene().selectable) > 0)
+    snapshot(app, out, "14_bot_after_move.png")
+
+    # ---------------------------------------------------------------- undo --
+    print("\n== 人机对战：悔棋退回自己的回合 ==")
+    app._undo()
+    pump(app, 0.2)
+    check("悔棋一次退掉两手", len(game.state.history) == 0, str(len(game.state.history)))
+    check("悔棋后轮到人", game.state.current == 0, str(game.state.current))
+    check("悔棋后电脑没有立刻重走", view.locked is False and app._bot_thinking is False)
+    pump(app, 0.6)
+    check("等待之后电脑依然没动", len(game.state.history) == 0, str(len(game.state.history)))
+
+    # ------------------------------------------------------- bot moves first --
+    print("\n== 人机对战：电脑先手 ==")
+    app.start_game(config_for(2, ("电脑", "我"), ("easy", None)))
+    realize(app)
+    check("开局就锁盘", app.board_view.locked is True)
+    check("开局状态栏是思考中", "思考中" in app.panel._status.cget("text"),
+          app.panel._status.cget("text"))
+    moved = wait_until(app, lambda: app.game.state.current == 1 and not app.board_view._animating)
+    check("电脑自己开了一局", moved and len(app.game.state.history) == 1,
+          str(len(app.game.state.history)))
+    check("交还给人后解锁", app.board_view.locked is False)
+
+    # ------------------------------------------------- leaving mid-thought --
+    print("\n== 人机对战：思考途中离开 ==")
+    app.start_game(config_for(2, ("电脑", "我"), ("hard", None)))
+    realize(app)
+    check("电脑正在思考", app._bot_thinking is True)
+    generation = app._bot_generation
+    app.show_menu()
+    app.update_idletasks()
+    check("返回菜单后取消了搜索", app._bot_generation != generation and not app._bot_thinking)
+    check("返回菜单后没有 agent", app.agents == {}, str(app.agents))
+    pump(app, 1.5)  # let the orphaned search finish and post into the void
+    check("被丢弃的结果没有把菜单顶掉", app.board_view is None)
+    check("菜单屏仍然健在", app._screen.__class__.__name__ == "MenuScreen")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="/tmp/cc_ui", help="directory for the PNGs")
@@ -863,6 +1025,7 @@ def main() -> int:
     check_game(app, out)
     check_endgame(app, out)
     check_triple(app, out)
+    check_bot(app, out)
     app.destroy()
 
     print("\n生成的 PNG:")

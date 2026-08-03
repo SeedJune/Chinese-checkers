@@ -9,7 +9,12 @@ that used to be a legal landing simply stops appearing in ``game.options()``.
 The one piece of state the widget owns beyond the hover cell is the confirm
 animation.  While a marble is flying the board is input-locked (``_animating``),
 because the engine has already applied the move and any click resolved against
-the new position would contradict what the player can still see.
+the new position would contradict what the player can still see.  The app can
+lock it for the same reason from the outside via ``locked``, which is what a
+bot's turn uses; both fold into ``_frozen``, the one predicate every input
+handler asks.  ``confirm_move`` is the deliberate exception -- it stays open
+while ``locked``, because that is the channel the app plays the bot's move
+through, so a bot move animates exactly like a human one.
 """
 
 from __future__ import annotations
@@ -64,6 +69,10 @@ class BoardView(tk.Canvas):
         self._hover: Hex | None = None
         self._cursor: str = ""
         self._animating = False
+        # Set by the app while a bot owns the turn.  Deliberately a plain
+        # attribute rather than a constructor argument: the widget knows
+        # nothing about agents, only that input is refused right now.
+        self.locked = False
         self._layout_size: tuple[int, int] = (0, 0)
         # (seat, cell hidden from occupancy, canvas_x, canvas_y)
         self._float: tuple[int, Hex, float, float] | None = None
@@ -75,6 +84,11 @@ class BoardView(tk.Canvas):
         self.bind("<Button-1>", self._on_click)
 
     # ------------------------------------------------------------ scene ----
+
+    @property
+    def _frozen(self) -> bool:
+        """Input is refused: a marble is in flight, or it is a bot's turn."""
+        return self._animating or self.locked
 
     def build_scene(self) -> Scene:
         """Snapshot the game as a :class:`Scene`.
@@ -93,7 +107,7 @@ class BoardView(tk.Canvas):
             occupancy.pop(hidden, None)
             floating = (seat, x, y)
 
-        quiet = self._animating or game.is_over
+        quiet = self._frozen or game.is_over
         opts = (
             {"steps": frozenset(), "jumps": frozenset()} if quiet else game.options()
         )
@@ -157,7 +171,7 @@ class BoardView(tk.Canvas):
         set of questions asked of the game, just without mutating anything.
         """
         game = self.game
-        if self._animating or game.is_over:
+        if self._frozen or game.is_over:
             return frozenset()
         if game.phase is Phase.IDLE:
             return game.selectable()
@@ -192,7 +206,7 @@ class BoardView(tk.Canvas):
 
     def _on_click(self, event: tk.Event) -> None:
         game = self.game
-        if self._animating or game.is_over:
+        if self._frozen or game.is_over:
             return
         self.ensure_layout()
         cell = self.renderer.cell_at(event.x, event.y)
@@ -266,7 +280,7 @@ class BoardView(tk.Canvas):
         self.animate_move(result.move, done)
 
     def rollback(self) -> None:
-        if self._animating:
+        if self._frozen:
             return
         try:
             self.game.rollback()
@@ -278,7 +292,7 @@ class BoardView(tk.Canvas):
         self.refresh()
 
     def cancel(self) -> None:
-        if self._animating or self.game.phase is Phase.IDLE:
+        if self._frozen or self.game.phase is Phase.IDLE:
             return
         self.game.cancel()
         self.on_status("已取消选择。", "info")
@@ -286,7 +300,7 @@ class BoardView(tk.Canvas):
         self.refresh()
 
     def undo(self) -> None:
-        if self._animating:
+        if self._frozen:
             return
         if not self.game.can_undo:
             self.on_status("没有可以悔棋的走法。", "info")
@@ -299,7 +313,7 @@ class BoardView(tk.Canvas):
     def focus_next_piece(self) -> None:
         """Tab: walk the movable pieces in a stable top-to-bottom order."""
         game = self.game
-        if self._animating or game.is_over:
+        if self._frozen or game.is_over:
             return
         if game.phase in (Phase.CHAINING, Phase.STEPPED):
             return  # a half-built move is in progress; don't discard it silently

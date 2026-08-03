@@ -11,14 +11,27 @@ three-colour mode is three at once), and the game ending.
 Key handlers deliberately return ``None`` (rather than ``"break"``) whenever
 they are not applicable, which leaves Tk's default behaviour -- notably Tab
 traversal between the menu's name fields -- intact.
+
+The app is also where a bot takes its turn, for the same reason it owns the
+screen swap: nothing below it should have to know that a player might not be a
+person.  The search runs on a worker thread over its own copy of the position
+and posts the move back through a queue that the main thread polls, because Tk
+is not safe to touch from anywhere but the thread that owns the loop.  The move
+itself is then played through exactly the same builder calls a click would
+make, so the animation, the banner and the panel need no bot-specific path.
 """
 
 from __future__ import annotations
 
+import queue
+import threading
+import time
 import tkinter as tk
 from typing import Callable
 
+from ..agents import Agent, LEVEL_NAMES, detached, make_agent
 from ..core.game import Game, MoveResult
+from ..core.rules import IllegalMove, Move
 from .board_view import BoardView
 from .menu import GameConfig, MenuScreen
 from .panel import SidePanel, rank_badge
@@ -28,6 +41,18 @@ from .theme import DEFAULT, mix, resolved
 BANNER_HOLD_MS = 1800
 BANNER_FADE_STEPS = 14
 BANNER_FADE_MS = 50
+
+#: How often the main thread checks whether the bot has finished thinking.
+BOT_POLL_MS = 40
+
+#: How long the chosen route is shown before the marble actually sets off, so
+#: the move can be read rather than merely noticed after the fact.
+BOT_REVEAL_MS = 220
+
+#: Floor on a bot's visible thinking time.  The easy level answers in under a
+#: millisecond, and a piece that teleports the instant you release the mouse
+#: reads as a glitch rather than as a reply.
+BOT_MIN_THINK_MS = 320
 
 MIN_SIZE = (1040, 800)
 
@@ -55,12 +80,25 @@ class App(tk.Tk):
         self._banner_job: str | None = None
         self._overlay: tk.Frame | None = None
 
+        #: Player index -> the bot playing that seat.  Empty for a hot-seat game.
+        self.agents: dict[int, Agent] = {}
+        self._bot_queue: queue.Queue = queue.Queue()
+        # Bumped whenever the position a search was started from stops being
+        # the live one.  A worker thread cannot be stopped, so it is disowned:
+        # its result arrives, fails the generation check, and is dropped.
+        self._bot_generation = 0
+        self._bot_thinking = False
+        self._bot_job: str | None = None
+        self._bot_started = 0.0
+        self._undoing = False
+
         self._bind_keys()
         self.show_menu()
 
     # ---------------------------------------------------------- screens ----
 
     def _clear_screen(self) -> None:
+        self._cancel_bot()
         self._cancel_banner()
         self._close_overlay()
         if self._screen is not None:
@@ -71,6 +109,7 @@ class App(tk.Tk):
 
     def show_menu(self) -> None:
         self._clear_screen()
+        self.agents = {}
         self.game = None
         menu = MenuScreen(self, on_start=self.start_game, theme=self.theme)
         menu.pack(fill=tk.BOTH, expand=True)
@@ -86,6 +125,13 @@ class App(tk.Tk):
             rules=config.rules,
             colors_each=config.colors_each,
         )
+        # ``bots`` is empty on a config built before the menu grew the choice,
+        # which is exactly the "everybody is human" case.
+        self.agents = {
+            index: make_agent(level)
+            for index, level in enumerate(config.bots or ())
+            if level is not None and index < config.player_count
+        }
 
         screen = tk.Frame(self, background=self.theme.app_bg)
         screen.pack(fill=tk.BOTH, expand=True)
@@ -108,11 +154,20 @@ class App(tk.Tk):
             on_cancel=self._cancel,
             on_undo=self._undo,
             theme=self.theme,
+            bots={
+                index: LEVEL_NAMES.get(level, level)
+                for index, level in enumerate(config.bots or ())
+                if level is not None and index < config.player_count
+            },
         )
         self.panel.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.panel.refresh(self.game)
-        self._on_status(f"轮到{self.game.current_player.name}行棋，点击一颗高亮的棋子。", "info")
+        if self.game.state.current not in self.agents:
+            self._on_status(
+                f"轮到{self.game.current_player.name}行棋，点击一颗高亮的棋子。", "info"
+            )
+        self._maybe_start_bot_turn()
 
     def restart(self) -> None:
         if self._config is not None:
@@ -124,8 +179,11 @@ class App(tk.Tk):
         if self.game is None:
             return
         if self.panel is not None:
-            self.panel.refresh(self.game)
+            self.panel.refresh(self.game, locked=self._locked)
         if result is None:
+            # Every redraw lands here, which is precisely why the bot is
+            # started from here too: no caller has to remember to do it.
+            self._maybe_start_bot_turn()
             return
         if result.finished is not None:
             # ``finished`` is a *player*: in the three-colour mode a person only
@@ -139,15 +197,144 @@ class App(tk.Tk):
         if result.game_over:
             # Let the banner be readable before the overlay covers the board.
             self.after(BANNER_HOLD_MS, self._show_game_over)
+            return
+        if self.game.state.current not in self.agents:
+            self._on_status(
+                f"轮到{self.game.current_player.name}行棋，点击一颗高亮的棋子。", "info"
+            )
+        self._maybe_start_bot_turn()
 
     def _on_status(self, message: str, kind: str = "info") -> None:
         if self.panel is not None:
             self.panel.set_status(message, kind)
 
+    # -------------------------------------------------------- bot turns ----
+
+    @property
+    def _locked(self) -> bool:
+        return self.board_view is not None and self.board_view.locked
+
+    def _cancel_bot(self) -> None:
+        """Disown any search in flight and drop whatever it eventually posts.
+
+        A running thread cannot be stopped, but it does not need to be: it
+        works on its own copy of the position and can only ever hand the result
+        back through the queue, where the generation check throws it away.
+        """
+        self._bot_generation += 1
+        self._bot_thinking = False
+        if self._bot_job is not None:
+            try:
+                self.after_cancel(self._bot_job)
+            except tk.TclError:  # already fired
+                pass
+            self._bot_job = None
+        if self.board_view is not None:
+            self.board_view.locked = False
+
+    def _maybe_start_bot_turn(self) -> None:
+        """Set the bot thinking if the turn is its own and nothing is in the way.
+
+        Idempotent and cheap by design, so every place the game might have
+        changed hands can just call it without knowing whether a bot is even
+        playing.
+        """
+        game = self.game
+        view = self.board_view
+        if game is None or view is None or game.is_over:
+            return
+        if self._bot_thinking or self._undoing or view._animating:
+            return
+        agent = self.agents.get(game.state.current)
+        if agent is None:
+            return
+
+        game.cancel()  # a half-built move from before an undo must not linger
+        self._bot_thinking = True
+        self._bot_started = time.monotonic()
+        view.locked = True
+        self._on_status(f"{game.current_player.name}思考中…", "info")
+        view.refresh()
+
+        generation = self._bot_generation
+        # Copied here, on the main thread, so the worker never reads a position
+        # the UI could still be mutating.
+        threading.Thread(
+            target=self._think,
+            args=(generation, agent, detached(game)),
+            daemon=True,
+        ).start()
+        self._bot_job = self.after(BOT_POLL_MS, self._poll_bot)
+
+    def _think(self, generation: int, agent: Agent, game: Game) -> None:
+        """Worker thread.  Must not touch Tk or the live game from in here."""
+        try:
+            move = agent.select_move(game)
+        except Exception as exc:  # a bot bug must not take the window with it
+            self._bot_queue.put((generation, None, exc))
+        else:
+            self._bot_queue.put((generation, move, None))
+
+    def _poll_bot(self) -> None:
+        self._bot_job = None
+        try:
+            generation, move, error = self._bot_queue.get_nowait()
+        except queue.Empty:
+            self._bot_job = self.after(BOT_POLL_MS, self._poll_bot)
+            return
+        if generation != self._bot_generation or self.board_view is None:
+            return  # belongs to a game that no longer exists
+        if error is not None or move is None:
+            self._bot_thinking = False
+            self.board_view.locked = False
+            self._on_status(f"电脑走子失败：{error}", "error")
+            self.board_view.refresh()
+            return
+        waited = time.monotonic() - self._bot_started
+        delay = max(1, int((BOT_MIN_THINK_MS / 1000.0 - waited) * 1000))
+        self._bot_job = self.after(delay, lambda: self._play_bot_move(generation, move))
+
+    def _play_bot_move(self, generation: int, move: Move) -> None:
+        """Build the bot's move with the very calls a click would make."""
+        self._bot_job = None
+        game = self.game
+        if generation != self._bot_generation or game is None or self.board_view is None:
+            return
+        try:
+            game.cancel()
+            game.select(move.origin)
+            for cell in move.path:
+                game.extend(cell)
+        except IllegalMove as exc:
+            game.cancel()
+            self._bot_thinking = False
+            self.board_view.locked = False
+            self._on_status(f"电脑给出了不合法的走法：{exc}", "error")
+            self.board_view.refresh()
+            return
+        self.board_view.refresh()  # the route is drawn even while locked
+        self._bot_job = self.after(
+            BOT_REVEAL_MS, lambda: self._commit_bot_move(generation)
+        )
+
+    def _commit_bot_move(self, generation: int) -> None:
+        self._bot_job = None
+        if generation != self._bot_generation or self.board_view is None:
+            return
+        # Released before the flight: ``_animating`` holds the board for the
+        # animation, and whoever moves next decides whether it locks again.
+        self.board_view.locked = False
+        # ``_bot_thinking`` stays set across the confirm and is only dropped
+        # afterwards.  Confirming repaints, and every repaint runs back through
+        # ``_maybe_start_bot_turn``; clearing the flag first would let that
+        # re-entrant call start a second search on a turn already being played.
+        self.board_view.confirm_move()
+        self._bot_thinking = False
+
     # --------------------------------------------------------- commands ----
 
     def _confirm(self) -> None:
-        if self.board_view is not None:
+        if self.board_view is not None and not self._locked:
             self.board_view.confirm_move()
 
     def _rollback(self) -> None:
@@ -159,8 +346,27 @@ class App(tk.Tk):
             self.board_view.cancel()
 
     def _undo(self) -> None:
-        if self.board_view is not None:
-            self.board_view.undo()
+        """Take back a move -- and, against a bot, its reply as well.
+
+        Undoing a single ply would just hand the bot the same turn back, so it
+        would instantly play again and nothing would appear to happen.  Walking
+        back to the nearest human turn is what "take that back" actually means
+        here.  It doubles as the way to interrupt a bot you no longer want to
+        wait for, which is why the undo button stays enabled while it thinks.
+        """
+        view = self.board_view
+        if view is None or self.game is None:
+            return
+        self._cancel_bot()
+        self._undoing = True
+        try:
+            view.undo()
+            if any(p.index not in self.agents for p in self.game.state.players):
+                while self.game.state.current in self.agents and self.game.can_undo:
+                    view.undo()
+        finally:
+            self._undoing = False
+        view.refresh()
 
     # -------------------------------------------------------- keyboard ----
 

@@ -36,6 +36,33 @@ Two modes on the start screen:
   other starts in and vice versa. The two simply alternate turns, one piece per turn,
   and you only win once all three of your colours are home.
 
+### Playing against the computer
+
+Whenever a table seats exactly **two players** — classic 2-player or 三色对战 — each
+player row on the start screen gets a 人类 / 电脑 switch, plus one difficulty for the
+table. Flip either side (or both) and press 开始游戏; the computer moves on its own
+whenever the turn is its.
+
+| 难度 | What it does | Thinking time |
+| --- | --- | --- |
+| 简单 | One move ahead, picking loosely among the decent replies | instant |
+| 普通 | Fixed three-ply search | ~50 ms |
+| 困难 | Iterative deepening, typically 5–6 plies in the midgame | ~1 s |
+
+It is a **minimax search with alpha-beta pruning**, iterative deepening, a Zobrist
+transposition table and killer-move ordering; positions are scored by how far every
+marble still has to travel to the tip of the camp it must fill. See
+`chinese_checkers/agents/` — and `docs/worklog/2026-08-03.md` for why alpha-beta rather
+than MCTS. The search runs on a worker thread over its own copy of the position, so the
+window stays responsive, and 悔棋 takes back the computer's reply along with your own
+move so the turn comes back to you.
+
+Benchmark two bots against each other with:
+
+```bash
+python3 scripts/bench_agent.py --a hard --b normal --games 6
+```
+
 Then play:
 
 | Action | How |
