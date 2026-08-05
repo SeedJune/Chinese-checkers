@@ -117,16 +117,16 @@ def player_camps(player_count: int, colors_each: int = 1) -> tuple[tuple[int, ..
         return TRIPLE_SEATING
     raise ValueError(f"不支持的每人颜色数：{colors_each}。")
 
-#: Default colour per camp.  The palette is deliberately jewel-toned rather
-#: than fully saturated: it remains distinct on the midnight lacquer board
-#: while letting the highlights make every marble feel like real glass.
+#: Default colour per camp.  These are the six mineral pigments used by the
+#: guochao interface: rich enough to stay distinct on celadon, but restrained
+#: enough to belong to the same ink-and-watercolour painting.
 DEFAULT_COLORS: tuple[str, ...] = (
-    "#B94E62",  # 0 garnet   top
-    "#5675B9",  # 1 sapphire upper right
-    "#46977E",  # 2 jade     lower right
-    "#8064A5",  # 3 amethyst bottom
-    "#C7834B",  # 4 amber    lower left
-    "#BFA65B",  # 5 citrine  upper left
+    "#B84A3F",  # 0 cinnabar top
+    "#3E6F91",  # 1 azurite  upper right
+    "#4D8969",  # 2 jade     lower right
+    "#795D83",  # 3 violet   bottom
+    "#BD7547",  # 4 ochre    lower left
+    "#C19A42",  # 5 gamboge  upper left
 )
 
 #: Human-readable colour names, same order as :data:`DEFAULT_COLORS`.

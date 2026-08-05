@@ -70,24 +70,69 @@ def mix(a: str, b: str, t: float) -> str:
 #: whole interface is in Chinese, so a family without Han glyphs would render
 #: as tofu boxes.
 _FONT_CANDIDATES: tuple[str, ...] = (
-    "Noto Sans SC Light",
     "Noto Sans SC",
+    "Source Han Sans SC",
+    "Noto Sans CJK SC",
     "PingFang SC",
+    "Microsoft YaHei UI",
+    "微软雅黑",
     "Heiti SC",
     "STHeiti",
     "Microsoft YaHei",
+    "WenQuanYi Micro Hei",
     "SimHei",
+    "黑体",
     "Arial Unicode MS",
     "Helvetica",
     "TkDefaultFont",
 )
 
-_TITLE_FONT_CANDIDATES: tuple[str, ...] = (
-    "Noto Serif SC",
-    "Noto Serif SC Medium",
-    "STKaiti",
-    "KaiTi",
+# Small Chinese copy needs aggressive screen hinting.  YaHei UI is tuned for
+# Windows' ClearType rasteriser, so prefer it for captions even when Noto Sans
+# SC remains the more characterful body face.
+_CAPTION_FONT_CANDIDATES: tuple[str, ...] = (
+    "Microsoft YaHei UI",
+    "微软雅黑",
+    "Microsoft YaHei",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "Noto Sans CJK SC",
     *_FONT_CANDIDATES,
+)
+
+_DISPLAY_FONT_CANDIDATES: tuple[str, ...] = (
+    "华文行楷",
+    "STXingkai",
+    "Xingkai SC",
+    "Kaiti SC",
+    "STKaiti",
+    "华文楷体",
+    "楷体",
+    "KaiTi",
+    "Noto Serif SC Medium",
+    "Noto Serif SC",
+    "TkDefaultFont",
+)
+
+_HEADING_FONT_CANDIDATES: tuple[str, ...] = (
+    "Noto Serif SC SemiBold",
+    "Noto Serif SC Medium",
+    "Source Han Serif SC",
+    "Noto Serif CJK SC",
+    "Songti SC",
+    "STSong",
+    "华文中宋",
+    "SimSun",
+    "宋体",
+    *_FONT_CANDIDATES,
+)
+
+_NUMERIC_FONT_CANDIDATES: tuple[str, ...] = (
+    "Palatino Linotype",
+    "Palatino",
+    "Georgia",
+    "Noto Serif SC Medium",
+    *_HEADING_FONT_CANDIDATES,
 )
 
 
@@ -99,12 +144,13 @@ def pick_font_family(candidates: Sequence[str] = _FONT_CANDIDATES) -> str:
     live, e.g. from :func:`resolved`.
     """
     try:
-        available = set(tkfont.families())
+        available = {name.casefold(): name for name in tkfont.families()}
     except Exception:
         return candidates[-1]
     for name in candidates:
-        if name in available:
-            return name
+        match = available.get(name.casefold())
+        if match is not None:
+            return match
     return candidates[-1]
 
 
@@ -118,42 +164,47 @@ class Theme:
     """Every colour, size ratio and font the renderer consults.  No logic."""
 
     # -- chrome ------------------------------------------------------------
-    # A restrained midnight palette lets the pieces carry the colour while the
-    # surrounding chrome feels more like a contemporary tabletop game than a
-    # default desktop form.
-    app_bg: str = "#07131F"
-    panel_bg: str = "#101F2E"
+    # Xuan paper and mineral pigments.  ``app_bg`` is also the graceful
+    # fallback when the generated watercolour assets are unavailable.
+    app_bg: str = "#F1EBDD"
+    panel_bg: str = "#F7F1E5"
+    card_bg: str = "#FBF7EE"
+    paper_deep: str = "#E8DDC8"
+    ink: str = "#273B35"
+    cinnabar: str = "#B34A38"
+    antique_gold: str = "#B58A43"
+    celadon: str = "#B7CBB7"
 
     # -- board -------------------------------------------------------------
-    board_fill: str = "#133C46"    # blue-green lacquer
-    board_edge: str = "#D7B66D"    # brushed-gold border around the star silhouette
-    board_shadow: str = "#020812"  # deep drop shadow
-    board_border_px: int = 3
+    board_fill: str = "#DCE1CF"    # pale celadon stone
+    board_edge: str = "#8B6A38"    # antique-gold rim
+    board_shadow: str = "#B8AE9B"  # soft ink shadow on paper
+    board_border_px: int = 2
 
     # Sockets stay close to the board tone -- a high-contrast dark circle reads
     # as a brown marble rather than as an empty hole.
-    hole_fill: str = "#071D28"          # recessed socket
-    hole_rim_light: str = "#5A8586"     # thin highlight arc, bottom-right
-    hole_rim_dark: str = "#020B12"      # thin shadow arc, top-left
+    hole_fill: str = "#B8BDAE"          # warm celadon recess
+    hole_rim_light: str = "#EFF0E4"     # paper-light inner edge
+    hole_rim_dark: str = "#7F897D"      # soft inner shadow
 
     # -- overlays ------------------------------------------------------------
-    hover_ring: str = "#F2E6C7"
-    selectable_glow: str = "#E8C36A"
-    selected_ring: str = "#F3CE78"
-    step_target: str = "#54D6BF"
-    jump_target_ring: str = "#6FA8FF"
-    path_line: str = "#E8C36A"
-    path_badge_fill: str = "#E8C36A"
+    hover_ring: str = "#6E7F73"
+    selectable_glow: str = "#C9A052"
+    selected_ring: str = "#B34A38"
+    step_target: str = "#5D9271"
+    jump_target_ring: str = "#3F7782"
+    path_line: str = "#B58A43"
+    path_badge_fill: str = "#B34A38"
     path_badge_text: str = "#FFFFFF"
-    commit_ring: str = "#FFF3D1"
-    target_camp_tint_strength: float = 0.38   # mixed into board/hole colour
-    last_move_marker: str = "#9AA3AF"
+    commit_ring: str = "#8E3028"
+    target_camp_tint_strength: float = 0.18
+    last_move_marker: str = "#8B887C"
 
     # -- text ----------------------------------------------------------------
-    text_primary: str = "#F4F0E8"
-    text_muted: str = "#9AAEBA"
-    text_danger: str = "#FF8B8B"
-    text_success: str = "#78D8B0"
+    text_primary: str = "#273B35"
+    text_muted: str = "#776F61"
+    text_danger: str = "#A43F35"
+    text_success: str = "#47775D"
 
     # -- seats -----------------------------------------------------------
     seat_colors: tuple[str, ...] = DEFAULT_COLORS
@@ -164,9 +215,9 @@ class Theme:
     piece_radius: float = 0.40
     marble_outline_width: float = 0.045
 
-    board_margin_units: float = 1.55   # extra hole-spacing padding around BOARD_EXTENT
-    star_push: float = 0.85            # outward push of silhouette vertices
-    shadow_offset: float = 0.14
+    board_margin_units: float = 1.65
+    star_push: float = 0.82
+    shadow_offset: float = 0.16
 
     selectable_glow_radius: float = 0.47
     selectable_glow_width: float = 0.06
@@ -184,17 +235,37 @@ class Theme:
     target_tint_radius: float = 0.60
 
     # -- fonts ---------------------------------------------------------------
-    font_family: str = "Noto Sans SC Light"   # resolved to an installed face at runtime
+    font_family: str = "Noto Sans SC"
     font_candidates: tuple[str, ...] = _FONT_CANDIDATES
-    title_font_family: str = "Noto Serif SC"
-    title_font_candidates: tuple[str, ...] = _TITLE_FONT_CANDIDATES
-    title_font_size: int = 22
+    title_font_family: str = "华文行楷"
+    title_font_candidates: tuple[str, ...] = _DISPLAY_FONT_CANDIDATES
+    heading_font_family: str = "Noto Serif SC SemiBold"
+    heading_font_candidates: tuple[str, ...] = _HEADING_FONT_CANDIDATES
+    numeric_font_family: str = "Palatino Linotype"
+    numeric_font_candidates: tuple[str, ...] = _NUMERIC_FONT_CANDIDATES
+    caption_font_family: str = "Microsoft YaHei UI"
+    caption_font_candidates: tuple[str, ...] = _CAPTION_FONT_CANDIDATES
+    display_scale: float = 1.0
+    title_font_size: int = 25
+    heading_font_size: int = 15
     ui_font_size: int = 13
-    small_font_size: int = 11
+    small_font_size: int = 12
+
+    def px(self, value: float) -> int:
+        """Convert a logical UI pixel to a crisp device-pixel measurement."""
+        return max(1, round(value * self.display_scale))
 
     @property
     def title_font(self) -> tuple[str, int, str]:
-        return (self.title_font_family, self.title_font_size, "bold")
+        return (self.title_font_family, self.title_font_size, "normal")
+
+    @property
+    def heading_font(self) -> tuple[str, int, str]:
+        return (self.heading_font_family, self.heading_font_size, "bold")
+
+    @property
+    def button_font(self) -> tuple[str, int]:
+        return (self.heading_font_family, self.ui_font_size)
 
     @property
     def ui_font(self) -> tuple[str, int]:
@@ -202,10 +273,10 @@ class Theme:
 
     @property
     def small_font(self) -> tuple[str, int]:
-        return (self.font_family, self.small_font_size)
+        return (self.caption_font_family, self.small_font_size)
 
 
-def resolved(theme: Theme) -> Theme:
+def resolved(theme: Theme, display_scale: float | None = None) -> Theme:
     """Return a copy of ``theme`` with ``font_family`` swapped for an installed one.
 
     Call this once a Tk root exists (e.g. from ``BoardRenderer.__init__``);
@@ -216,6 +287,10 @@ def resolved(theme: Theme) -> Theme:
         theme,
         font_family=pick_font_family(theme.font_candidates),
         title_font_family=pick_font_family(theme.title_font_candidates),
+        heading_font_family=pick_font_family(theme.heading_font_candidates),
+        numeric_font_family=pick_font_family(theme.numeric_font_candidates),
+        caption_font_family=pick_font_family(theme.caption_font_candidates),
+        display_scale=theme.display_scale if display_scale is None else display_scale,
     )
 
 

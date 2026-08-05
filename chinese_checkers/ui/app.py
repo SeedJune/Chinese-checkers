@@ -23,7 +23,9 @@ make, so the animation, the banner and the panel need no bot-specific path.
 
 from __future__ import annotations
 
+import ctypes
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -54,20 +56,45 @@ BOT_REVEAL_MS = 220
 #: reads as a glitch rather than as a reply.
 BOT_MIN_THINK_MS = 320
 
-MIN_SIZE = (1040, 800)
+MIN_SIZE = (1040, 840)
+DEFAULT_SIZE = (1180, 900)
+
+
+def _enable_windows_dpi_awareness() -> None:
+    """Ask Windows for native-resolution text instead of a bitmap-scaled UI.
+
+    Without this, Windows renders Tk at 96 DPI and enlarges the finished
+    window.  Large lettering survives, but 11–13 pt Chinese strokes acquire
+    exactly the jagged/soft edges that prompted this helper.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 
 class App(tk.Tk):
     """Root window.  Owns the current game and the mounted screen."""
 
     def __init__(self) -> None:
+        _enable_windows_dpi_awareness()
         super().__init__()
         self.title("中国跳棋")
-        self.minsize(*MIN_SIZE)
-        self.geometry("1180x860")
+        self._display_scale = max(1.0, min(3.0, self.winfo_fpixels("1i") / 96.0))
+        width, height = (round(value * self._display_scale) for value in MIN_SIZE)
+        self.minsize(width, height)
+        default_w, default_h = (
+            round(value * self._display_scale) for value in DEFAULT_SIZE
+        )
+        self.geometry(f"{default_w}x{default_h}")
         # ``resolved`` needs a live Tk to ask which CJK faces are installed,
         # so the theme can only be finalised here, not at import time.
-        self.theme = resolved(DEFAULT)
+        self.theme = resolved(DEFAULT, display_scale=self._display_scale)
         self.configure(background=self.theme.app_bg)
 
         self.game: Game | None = None
@@ -153,6 +180,7 @@ class App(tk.Tk):
             on_rollback=self._rollback,
             on_cancel=self._cancel,
             on_undo=self._undo,
+            on_new_game=self.show_menu,
             theme=self.theme,
             bots={
                 index: LEVEL_NAMES.get(level, level)
@@ -412,18 +440,18 @@ class App(tk.Tk):
             return
         self._cancel_banner()
         theme = self.theme
-        self._banner_bg = mix(theme.app_bg, "#FFFFFF", 0.65)
+        self._banner_bg = theme.card_bg
         banner = tk.Label(
             self.board_view,
             text=text,
             font=theme.title_font,
-            fg=theme.text_primary,
+            fg=theme.cinnabar,
             background=self._banner_bg,
             padx=26,
             pady=14,
             bd=0,
             highlightthickness=1,
-            highlightbackground=mix(theme.app_bg, theme.text_muted, 0.4),
+            highlightbackground=theme.antique_gold,
         )
         banner.place(relx=0.5, rely=0.11, anchor="center")
         self._banner = banner
@@ -444,9 +472,9 @@ class App(tk.Tk):
         theme = self.theme
         self._banner.configure(
             background=mix(self._banner_bg, theme.app_bg, t),
-            fg=mix(theme.text_primary, theme.app_bg, t),
+            fg=mix(theme.cinnabar, theme.app_bg, t),
             highlightbackground=mix(
-                mix(theme.app_bg, theme.text_muted, 0.4), theme.app_bg, t
+                theme.antique_gold, theme.app_bg, t
             ),
         )
         self._banner_job = self.after(BANNER_FADE_MS, lambda: self._fade_banner(step + 1))
@@ -476,15 +504,15 @@ class App(tk.Tk):
         tk.Label(
             overlay,
             text="本局结束",
-            font=theme.title_font,
-            fg=theme.text_primary,
+            font=(theme.title_font_family, theme.title_font_size + 6),
+            fg=theme.cinnabar,
             background=theme.panel_bg,
         ).pack(padx=48, pady=(26, 4))
         tk.Label(
             overlay,
             text="最终名次",
-            font=theme.small_font,
-            fg=theme.text_muted,
+            font=theme.heading_font,
+            fg=theme.ink,
             background=theme.panel_bg,
         ).pack(pady=(0, 10))
 
@@ -528,12 +556,12 @@ class App(tk.Tk):
         tk.Button(
             buttons,
             text="再来一局",
-            font=theme.ui_font,
+            font=theme.button_font,
             command=self.restart,
-            fg=theme.text_primary,
-            bg=mix(theme.panel_bg, theme.board_fill, 0.52),
-            activeforeground=theme.text_primary,
-            activebackground=mix(theme.panel_bg, theme.board_edge, 0.20),
+            fg=theme.card_bg,
+            bg=theme.cinnabar,
+            activeforeground=theme.card_bg,
+            activebackground=mix(theme.cinnabar, theme.ink, 0.18),
             relief=tk.FLAT,
             bd=0,
             padx=14,
@@ -544,12 +572,12 @@ class App(tk.Tk):
         tk.Button(
             buttons,
             text="返回菜单",
-            font=theme.ui_font,
+            font=theme.button_font,
             command=self.show_menu,
             fg=theme.text_primary,
-            bg=mix(theme.panel_bg, theme.board_fill, 0.52),
+            bg=theme.card_bg,
             activeforeground=theme.text_primary,
-            activebackground=mix(theme.panel_bg, theme.board_edge, 0.20),
+            activebackground=mix(theme.card_bg, theme.antique_gold, 0.18),
             relief=tk.FLAT,
             bd=0,
             padx=14,

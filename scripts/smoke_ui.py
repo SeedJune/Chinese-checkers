@@ -473,7 +473,13 @@ def check_game(app: App, out: Path) -> None:
             for c in list(game.state.occupancy)[:20]
         ),
     )
-    check("侧栏宽度固定 270", app.panel.winfo_width() == 270, str(app.panel.winfo_width()))
+    expected_panel_width = app.theme.px(PANEL_WIDTH)
+    check(
+        "侧栏宽度按 DPI 固定",
+        app.panel.winfo_width() == expected_panel_width,
+        f"{app.panel.winfo_width()} / {expected_panel_width}",
+    )
+    check("对局中提供新游戏入口", app.panel.new_game_button.cget("text") == "新游戏")
     check("侧栏四个按钮齐全", sorted(app.panel.buttons) == ["cancel", "confirm", "rollback", "undo"])
     check(
         "按钮标签带快捷键",
@@ -619,10 +625,15 @@ def check_game(app: App, out: Path) -> None:
     print("\n== 键盘绑定 ==")
     for name in ("<Return>", "<BackSpace>", "<Escape>", "<Command-z>", "<Control-z>", "<Tab>"):
         check(f"root 绑定了 {name}", bool(app.bind(name)))
-    for name in ("<Return>", "<BackSpace>", "<Escape>", "<Command-z>"):
+    # Undo is intentionally valid while the route builder is idle whenever
+    # history exists, so it does not belong in this no-op check.
+    for name in ("<Return>", "<BackSpace>", "<Escape>"):
         app.event_generate(name, when="now")
     pump(app)
-    check("空闲时按键是安全空操作", dict(game.state.occupancy) == before and game.phase is Phase.IDLE)
+    check(
+        "空闲时路线编辑键是安全空操作",
+        dict(game.state.occupancy) == before and game.phase is Phase.IDLE,
+    )
 
 
 def check_endgame(app: App, out: Path) -> None:

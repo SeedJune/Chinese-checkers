@@ -20,13 +20,16 @@ In this repository, I would gradually complete these three playing methods and o
 
 ## Getting started
 
-Nothing to install — the game runs on the Python standard library alone, and Tkinter
-ships with CPython. Pillow is optional: when it is available the marbles are drawn as
-anti-aliased sprites instead of stacked ovals.
+Tkinter ships with CPython. Install Pillow for the intended anti-aliased mineral-stone
+pieces (the game still has a pure-Tk fallback):
 
 ```bash
-python3 -m chinese_checkers                    # launch the game
+python -m pip install -r requirements.txt
+python -m chinese_checkers                    # launch the game
 ```
+
+The module name uses an underscore. `python -m chinese-checkers` is invalid because
+Python package names cannot be imported with that hyphenated command.
 
 Two modes on the start screen:
 
@@ -74,6 +77,7 @@ Then play:
 | Deselect | `Esc` |
 | Take back the last move | `Cmd/Ctrl+Z` |
 | Cycle your movable pieces | `Tab` |
+| Start another game | Click `新游戏` in the upper-right corner of the side panel |
 
 Illegal cells are never highlighted and clicking one changes nothing, so an illegal move simply cannot be played. When a player gets every piece home they are ranked and
 the rest play on; finished players are skipped automatically.

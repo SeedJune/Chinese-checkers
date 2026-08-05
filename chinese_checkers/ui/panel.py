@@ -114,10 +114,13 @@ class SidePanel(tk.Frame):
         on_rollback: Callable[[], None],
         on_cancel: Callable[[], None],
         on_undo: Callable[[], None],
+        on_new_game: Callable[[], None],
         theme: Theme = DEFAULT,
         bots: dict[int, str] | None = None,
     ) -> None:
-        super().__init__(master, width=PANEL_WIDTH, background=theme.panel_bg)
+        super().__init__(
+            master, width=theme.px(PANEL_WIDTH), background=theme.panel_bg
+        )
         self.theme = theme
         #: Player index -> difficulty label, for the players a bot is driving.
         self.bots = dict(bots or {})
@@ -125,8 +128,8 @@ class SidePanel(tk.Frame):
         # width is silently ignored.
         self.pack_propagate(False)
 
-        pad = 16
-        self._build_header(game, pad)
+        pad = theme.px(18)
+        self._build_header(game, pad, on_new_game)
         self._build_player_rows(game, pad)
         self._build_route(pad)
         self._build_buttons(pad, on_confirm, on_rollback, on_cancel, on_undo)
@@ -136,33 +139,54 @@ class SidePanel(tk.Frame):
 
     # ----------------------------------------------------------- layout ----
 
-    def _build_header(self, game: Game, pad: int) -> None:
+    def _build_header(
+        self, game: Game, pad: int, on_new_game: Callable[[], None]
+    ) -> None:
         theme = self.theme
         head = tk.Frame(self, background=theme.panel_bg)
         head.pack(fill=tk.X, padx=pad, pady=(pad, 4))
+        top = tk.Frame(head, background=theme.panel_bg)
+        top.pack(fill=tk.X)
         tk.Label(
-            head,
+            top,
             text="当前回合",
-            font=theme.small_font,
-            fg=theme.text_muted,
+            font=theme.heading_font,
+            fg=theme.cinnabar,
             background=theme.panel_bg,
             anchor="w",
-        ).pack(fill=tk.X)
+        ).pack(side=tk.LEFT)
+        self.new_game_button = tk.Button(
+            top,
+            text="新游戏",
+            command=on_new_game,
+            font=theme.small_font,
+            fg=theme.cinnabar,
+            bg=theme.card_bg,
+            activeforeground=theme.card_bg,
+            activebackground=theme.cinnabar,
+            relief=tk.FLAT,
+            bd=0,
+            padx=theme.px(8),
+            pady=theme.px(3),
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        self.new_game_button.pack(side=tk.RIGHT)
 
         row = tk.Frame(head, background=theme.panel_bg)
         row.pack(fill=tk.X, pady=(4, 0))
         # One dot per colour the side to move runs.  Every player owns the same
         # number of colours, so the widgets can be built once and only repainted.
         self._turn_dots = [
-            _dot(row, 16, theme.panel_bg) for _ in game.state.seats_of(0)
+            _dot(row, theme.px(16), theme.panel_bg) for _ in game.state.seats_of(0)
         ]
         for i, dot in enumerate(self._turn_dots):
             dot.pack(side=tk.LEFT, padx=(0, 8 if i == len(self._turn_dots) - 1 else 3))
         self._turn_name = tk.Label(
             row,
             text="",
-            font=(theme.font_family, theme.title_font_size - 4, "bold"),
-            fg=theme.text_primary,
+            font=(theme.title_font_family, theme.title_font_size - 1),
+            fg=theme.ink,
             background=theme.panel_bg,
             anchor="w",
         )
@@ -170,7 +194,11 @@ class SidePanel(tk.Frame):
 
     def _separator(self, pad: int) -> None:
         theme = self.theme
-        line = tk.Frame(self, height=1, background=mix(theme.panel_bg, theme.text_muted, 0.35))
+        line = tk.Frame(
+            self,
+            height=theme.px(1),
+            background=mix(theme.paper_deep, theme.antique_gold, 0.22),
+        )
         line.pack(fill=tk.X, padx=pad, pady=8)
 
     def _build_player_rows(self, game: Game, pad: int) -> None:
@@ -184,8 +212,8 @@ class SidePanel(tk.Frame):
         tk.Label(
             self,
             text="玩家",
-            font=theme.small_font,
-            fg=theme.text_muted,
+            font=theme.heading_font,
+            fg=theme.ink,
             background=theme.panel_bg,
             anchor="w",
         ).pack(fill=tk.X, padx=pad)
@@ -196,7 +224,7 @@ class SidePanel(tk.Frame):
             row.pack(fill=tk.X, padx=pad - 6, pady=(2, 0))
             dots: list[tk.Canvas] = []
             for i, _seat in enumerate(player.seats):
-                dot = _dot(row, 12, theme.panel_bg)
+                dot = _dot(row, theme.px(12), theme.panel_bg)
                 dot.pack(side=tk.LEFT, padx=(6 if i == 0 else 2, 0))
                 dots.append(dot)
             name = tk.Label(
@@ -216,8 +244,8 @@ class SidePanel(tk.Frame):
                     row,
                     text=f"电脑·{self.bots[player.index]}",
                     font=theme.small_font,
-                    fg=theme.text_muted,
-                    background=theme.panel_bg,
+                    fg=theme.cinnabar,
+                    background=mix(theme.panel_bg, theme.cinnabar, 0.08),
                     anchor="w",
                 )
                 tag.pack(side=tk.LEFT, padx=(5, 0))
@@ -236,7 +264,7 @@ class SidePanel(tk.Frame):
                 for seat_index in player.seats:
                     line = tk.Frame(self, background=theme.panel_bg)
                     line.pack(fill=tk.X, padx=pad + 8)
-                    seat_dot = _dot(line, 9, theme.panel_bg)
+                    seat_dot = _dot(line, theme.px(9), theme.panel_bg)
                     seat_dot.pack(side=tk.LEFT, padx=(0, 6))
                     label = tk.Label(
                         line,
@@ -257,6 +285,14 @@ class SidePanel(tk.Frame):
     def _build_route(self, pad: int) -> None:
         theme = self.theme
         self._separator(pad)
+        tk.Label(
+            self,
+            text="行棋路线",
+            font=theme.heading_font,
+            fg=theme.ink,
+            background=theme.panel_bg,
+            anchor="w",
+        ).pack(fill=tk.X, padx=pad, pady=(0, 5))
         self._route = tk.Label(
             self,
             text="",
@@ -265,7 +301,7 @@ class SidePanel(tk.Frame):
             background=theme.panel_bg,
             anchor="w",
             justify=tk.LEFT,
-            wraplength=PANEL_WIDTH - 2 * pad,
+            wraplength=theme.px(PANEL_WIDTH) - 2 * pad,
         )
         self._route.pack(fill=tk.X, padx=pad)
 
@@ -290,20 +326,23 @@ class SidePanel(tk.Frame):
         )
         self.buttons: dict[str, tk.Button] = {}
         for key, label, command in specs:
+            primary = key == "confirm"
             button = tk.Button(
                 box,
                 text=label,
-                font=theme.ui_font,
+                font=theme.button_font if primary else theme.ui_font,
                 command=command,
-                fg=theme.text_primary,
-                bg=mix(theme.panel_bg, theme.board_fill, 0.52),
-                activeforeground=theme.text_primary,
-                activebackground=mix(theme.panel_bg, theme.board_edge, 0.20),
+                fg=theme.card_bg if primary else theme.text_primary,
+                bg=theme.cinnabar if primary else theme.card_bg,
+                activeforeground=theme.card_bg if primary else theme.text_primary,
+                activebackground=mix(theme.cinnabar, theme.ink, 0.18)
+                if primary
+                else mix(theme.card_bg, theme.antique_gold, 0.16),
                 disabledforeground=mix(theme.text_muted, theme.panel_bg, 0.35),
                 relief=tk.FLAT,
                 bd=0,
-                padx=10,
-                pady=7,
+                padx=theme.px(10),
+                pady=theme.px(8 if primary else 7),
                 highlightbackground=theme.panel_bg,
                 default=tk.ACTIVE if key == "confirm" else tk.NORMAL,
             )
@@ -320,7 +359,7 @@ class SidePanel(tk.Frame):
             background=theme.panel_bg,
             anchor="w",
             justify=tk.LEFT,
-            wraplength=PANEL_WIDTH - 2 * pad,
+            wraplength=theme.px(PANEL_WIDTH) - 2 * pad,
         )
         self._status.pack(side=tk.BOTTOM, fill=tk.X, padx=pad, pady=pad)
 
@@ -354,7 +393,7 @@ class SidePanel(tk.Frame):
             active = player.index == current and not state.is_over
             # Tint with the colour actually in play, not just the first one.
             tint = game.active_seat.color if active else state.seats[player.seats[0]].color
-            bg = mix(theme.panel_bg, tint, 0.22) if active else theme.panel_bg
+            bg = mix(theme.panel_bg, tint, 0.10) if active else theme.panel_bg
             widgets.frame.configure(background=bg)
             for dot, seat_index in zip(widgets.dots, player.seats):
                 _paint_dot(dot, state.seats[seat_index].color, bg, dim=finished)
@@ -362,7 +401,7 @@ class SidePanel(tk.Frame):
                 text=player.name,
                 background=bg,
                 fg=theme.text_muted if finished else theme.text_primary,
-                font=(theme.font_family, theme.ui_font_size, "bold")
+                font=(theme.heading_font_family, theme.ui_font_size, "bold")
                 if active
                 else theme.ui_font,
             )
